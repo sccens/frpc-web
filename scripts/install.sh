@@ -2,9 +2,14 @@
 set -eu
 
 APP_NAME="frpc-web"
+REPO_URL="${FRPC_WEB_REPO_URL:-https://github.com/sccens/frpc-web.git}"
+REPO_REF="${FRPC_WEB_REPO_REF:-main}"
+ARCHIVE_URL="${FRPC_WEB_ARCHIVE_URL:-https://github.com/sccens/frpc-web/archive/refs/heads/$REPO_REF.tar.gz}"
+SOURCE_DIR="${FRPC_WEB_SOURCE_DIR:-/tmp/frpc-web-source}"
 INSTALL_DIR="/opt/frpc-web"
 ENV_FILE="$INSTALL_DIR/frpc-web.env"
-ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || pwd)
+ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd || pwd)
 DEFAULT_HOST="127.0.0.1"
 DEFAULT_PORT="8080"
 DEFAULT_ADDR="$DEFAULT_HOST:$DEFAULT_PORT"
@@ -16,12 +21,38 @@ fi
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Please run as root, for example:" >&2
-  echo "  sudo scripts/install.sh" >&2
+  echo "  curl -fsSL https://raw.githubusercontent.com/sccens/frpc-web/main/scripts/install.sh | sudo sh" >&2
   exit 1
 fi
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
+}
+
+ensure_safe_source_dir() {
+  case "$SOURCE_DIR" in
+    ''|/|/tmp|/var|/var/tmp|/opt|"$INSTALL_DIR"|"$INSTALL_DIR"/*)
+      echo "Refusing to use unsafe FRPC_WEB_SOURCE_DIR: $SOURCE_DIR" >&2
+      exit 1
+      ;;
+  esac
+}
+
+can_prompt() {
+  [ -r /dev/tty ] && [ -w /dev/tty ]
+}
+
+prompt_read() {
+  prompt="$1"
+  value=""
+  if can_prompt; then
+    printf '%s' "$prompt" >/dev/tty
+    read -r value </dev/tty || value=""
+  else
+    printf '%s' "$prompt"
+    read -r value || value=""
+  fi
+  printf '%s\n' "$value"
 }
 
 read_env_value() {
@@ -114,7 +145,7 @@ choose_listen_addr() {
     existing_addr="$DEFAULT_ADDR"
   fi
 
-  if [ ! -t 0 ]; then
+  if ! can_prompt; then
     validate_addr_for_healthcheck "$existing_addr"
     addr="$existing_addr"
     echo "==> No interactive terminal; using $addr"
@@ -146,8 +177,7 @@ Choose listen address:
   1) 127.0.0.1 - local only, recommended behind SSH tunnel or reverse proxy
   2) 0.0.0.0   - reachable from the VM or server network
 EOF
-  printf 'Enter choice [%s]: ' "$default_choice"
-  read -r choice || choice=""
+  choice=$(prompt_read "Enter choice [$default_choice]: ")
   choice="${choice:-$default_choice}"
 
   case "$choice" in
@@ -163,8 +193,7 @@ EOF
       ;;
   esac
 
-  printf 'Listen port [%s]: ' "$default_port"
-  read -r selected_port || selected_port=""
+  selected_port=$(prompt_read "Listen port [$default_port]: ")
   selected_port="${selected_port:-$default_port}"
   if ! validate_port "$selected_port"; then
     echo "Invalid port: $selected_port" >&2
@@ -185,16 +214,74 @@ ensure_source_checkout() {
     || [ ! -f "$ROOT_DIR/web/package.json" ] \
     || [ ! -f "$ROOT_DIR/scripts/install-linux.sh" ] \
     || [ ! -f "$ROOT_DIR/deploy/frpc-web.service" ]; then
-    cat >&2 <<EOF
-This installer must be run from a frpc-web source checkout.
+    return 1
+  fi
+  return 0
+}
 
-Expected source directory: $ROOT_DIR
+download_file() {
+  url="$1"
+  output="$2"
+  if command_exists curl; then
+    curl -fsSL "$url" -o "$output"
+    return
+  fi
+  if command_exists wget; then
+    wget -qO "$output" "$url"
+    return
+  fi
+  echo "curl or wget is required to download source code." >&2
+  exit 1
+}
 
-For example:
-  git clone https://github.com/sccens/frpc-web.git
-  cd frpc-web
-  sudo scripts/install.sh
-EOF
+download_source_archive() {
+  if ! command_exists tar; then
+    echo "tar is required to extract source code archive." >&2
+    return 1
+  fi
+
+  tmp_archive="$SOURCE_DIR.tar.gz"
+  rm -rf "$SOURCE_DIR" "$tmp_archive"
+  mkdir -p "$SOURCE_DIR"
+
+  echo "==> Downloading $APP_NAME source archive"
+  if ! download_file "$ARCHIVE_URL" "$tmp_archive"; then
+    rm -rf "$SOURCE_DIR" "$tmp_archive"
+    return 1
+  fi
+
+  if ! tar -xzf "$tmp_archive" -C "$SOURCE_DIR" --strip-components=1; then
+    rm -rf "$SOURCE_DIR" "$tmp_archive"
+    return 1
+  fi
+  rm -f "$tmp_archive"
+}
+
+clone_source() {
+  ensure_safe_source_dir
+  rm -rf "$SOURCE_DIR"
+  echo "==> Cloning $APP_NAME source"
+  git clone --depth 1 --branch "$REPO_REF" "$REPO_URL" "$SOURCE_DIR"
+}
+
+prepare_source() {
+  if ensure_source_checkout; then
+    return
+  fi
+
+  ensure_safe_source_dir
+  if command_exists git; then
+    if ! clone_source; then
+      echo "Git clone failed; trying source archive download." >&2
+      download_source_archive
+    fi
+  else
+    download_source_archive
+  fi
+
+  ROOT_DIR=$(CDPATH= cd -- "$SOURCE_DIR" && pwd)
+  if ! ensure_source_checkout; then
+    echo "Downloaded source does not look like a $APP_NAME checkout: $ROOT_DIR" >&2
     exit 1
   fi
 }
@@ -258,9 +345,8 @@ Install one of these toolchains, then rerun this script:
 EOF
 }
 
+prepare_source
 cd "$ROOT_DIR"
-
-ensure_source_checkout
 ensure_systemd
 choose_listen_addr
 

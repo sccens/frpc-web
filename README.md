@@ -81,10 +81,10 @@ GitHub 代理优先级：
 一键脚本优先使用本机 Go、Node.js、npm 和 make 构建；如果本机工具链不可用，但已安装 Docker，则会自动改用 Docker 构建并提取生产二进制。
 
 ```bash
-git clone https://github.com/sccens/frpc-web.git
-cd frpc-web
-sudo scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/sccens/frpc-web/main/scripts/install.sh | sudo sh
 ```
+
+脚本会自动拉取 GitHub 上的项目源码并完成构建、安装和启动；如果已经在源码目录中运行，也会直接使用当前源码。
 
 脚本开始时会让你选择监听地址：
 
@@ -96,7 +96,7 @@ sudo scripts/install.sh
 如果希望自动化安装，也可以显式传入监听地址。公网暴露仍建议叠加 HTTPS 和访问控制：
 
 ```bash
-sudo env FRPC_WEB_ADDR=0.0.0.0:8080 scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/sccens/frpc-web/main/scripts/install.sh | sudo env FRPC_WEB_ADDR=0.0.0.0:8080 sh
 ```
 
 如果选择 `127.0.0.1`，远程服务器建议通过 SSH 隧道访问：
