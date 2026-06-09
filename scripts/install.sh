@@ -193,14 +193,8 @@ EOF
       ;;
   esac
 
-  selected_port=$(prompt_read "Listen port [$default_port]: ")
-  selected_port="${selected_port:-$default_port}"
-  if ! validate_port "$selected_port"; then
-    echo "Invalid port: $selected_port" >&2
-    exit 1
-  fi
-
-  addr="$listen_host:$selected_port"
+  addr="$listen_host:$default_port"
+  echo "==> Using FRPC_WEB_ADDR=$addr"
   if [ "$listen_host" = "0.0.0.0" ]; then
     cat <<'EOF'
 Note: 0.0.0.0 exposes the service on this machine's network interfaces.

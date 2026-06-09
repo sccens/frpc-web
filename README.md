@@ -93,6 +93,8 @@ curl -fsSL https://raw.githubusercontent.com/sccens/frpc-web/main/scripts/instal
 2) 0.0.0.0   - 监听服务器/虚拟机网卡，便于从同网络访问
 ```
 
+默认端口为 `8080`。如果需要自定义端口，可以通过 `FRPC_WEB_ADDR` 显式传入。
+
 如果希望自动化安装，也可以显式传入监听地址。公网暴露仍建议叠加 HTTPS 和访问控制：
 
 ```bash
