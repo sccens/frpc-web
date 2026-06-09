@@ -34,7 +34,7 @@ type tokenClaims struct {
 	Expires   int64  `json:"exp"`
 }
 
-func authMiddleware(service *app.Service, trustProxyHeaders bool, next http.Handler) http.Handler {
+func authMiddleware(service *app.Service, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/api/") || isPublicAPI(r.URL.Path) {
 			next.ServeHTTP(w, r)

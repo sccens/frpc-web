@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/sccens/frpc-web/internal/app"
 	"github.com/sccens/frpc-web/internal/frpc"
@@ -63,7 +64,7 @@ func main() {
 	httpServer := &http.Server{Addr: addr, Handler: handler}
 	go func() {
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5_000_000_000)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)
 	}()

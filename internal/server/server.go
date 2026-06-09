@@ -78,7 +78,7 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("POST /api/frpc/install/offline", api.installOffline)
 	mux.Handle("/", staticHandler(opts.WebDir, opts.WebFS))
 
-	return loggingMiddleware(opts.Logger, authMiddleware(opts.Service, opts.TrustProxyHeaders, auditMiddleware(opts.Service, opts.TrustProxyHeaders, mux)))
+	return loggingMiddleware(opts.Logger, authMiddleware(opts.Service, auditMiddleware(opts.Service, opts.TrustProxyHeaders, mux)))
 }
 
 type apiHandler struct {
