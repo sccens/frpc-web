@@ -74,11 +74,7 @@ GitHub 代理优先级：
 
 ### 一键安装脚本
 
-一键安装脚本位于：
-
-```text
-scripts/install.sh
-```
+一键安装脚本位于：[scripts/install.sh](https://github.com/sccens/frpc-web/blob/main/scripts/install.sh)。
 
 推荐生产环境优先使用该脚本。脚本会构建单二进制、安装 systemd 服务、生成 Access Key、启动服务，并输出访问地址。
 
