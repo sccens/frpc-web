@@ -1,0 +1,11 @@
+.git
+.DS_Store
+frpc-web-data
+bin
+dist
+web/dist
+web/node_modules
+web/.vite
+**/*.log
+tmp
+

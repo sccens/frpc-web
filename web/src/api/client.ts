@@ -1,0 +1,531 @@
+import axios from 'axios'
+
+export interface Summary {
+  totalServers: number
+  runningServers: number
+  proxyRules: number
+  openEvents: number
+}
+
+export type ProxyType = 'tcp' | 'udp' | 'http' | 'https' | 'stcp' | 'xtcp'
+export type ServerStatus =
+  | 'running'
+  | 'stopped'
+  | 'config_dirty'
+  | 'error'
+  | 'starting'
+  | 'reloading'
+
+export interface ProxyRule {
+  id: string
+  serverId: string
+  name: string
+  type: ProxyType
+  localIp: string
+  localPort: number
+  remotePort?: number
+  customDomains?: string[]
+  enabled: boolean
+  secretKey?: string
+  role?: 'server' | 'visitor'
+  serverName?: string
+  bindAddr?: string
+  bindPort?: number
+  useEncryption: boolean
+  useCompression: boolean
+  bandwidthLimit?: string
+  locations?: string[]
+  hostHeaderRewrite?: string
+  httpUser?: string
+  httpPassword?: string
+  requestHeaders?: string[]
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface ProxyRuleInput {
+  name: string
+  type: ProxyType
+  localIp: string
+  localPort: number
+  remotePort: number
+  customDomains: string[]
+  enabled: boolean
+  secretKey?: string
+  role?: 'server' | 'visitor'
+  serverName?: string
+  bindAddr?: string
+  bindPort?: number
+  useEncryption: boolean
+  useCompression: boolean
+  bandwidthLimit?: string
+  locations?: string[]
+  hostHeaderRewrite?: string
+  httpUser?: string
+  httpPassword?: string
+  requestHeaders?: string[]
+}
+
+export interface Server {
+  id: string
+  name: string
+  serverAddr: string
+  serverPort: number
+  authToken?: string
+  transportProtocol: string
+  configMode: 'toml_reload' | 'store_api'
+  status: ServerStatus
+  autoStart: boolean
+  autoRestart: boolean
+  maxRestarts: number
+  proxyCount: number
+  uptime: string
+  lastReloadAt: string
+  restartRequired: boolean
+  adminAddr: string
+  adminPort: number
+  adminUser?: string
+  adminPassword?: string
+  frpcVersionId: string
+  rules?: ProxyRule[]
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface ServerInput {
+  name: string
+  serverAddr: string
+  serverPort: number
+  authToken: string
+  transportProtocol: string
+  configMode: 'toml_reload' | 'store_api'
+  autoStart: boolean
+  autoRestart: boolean
+  maxRestarts: number
+  adminPort: number
+  adminUser?: string
+  adminPassword?: string
+  frpcVersionId: string
+}
+
+export interface HealthEvent {
+  id: string
+  level: 'info' | 'warning' | 'critical'
+  serverId: string
+  server: string
+  message: string
+  status: string
+  createdAt: string
+}
+
+export interface FrpcVersion {
+  id: string
+  installed: boolean
+  version: string
+  latest: string
+  path: string
+  platform: string
+  arch: string
+  source: string
+  active: boolean
+  createdAt: string
+}
+
+export interface Settings {
+  addr: string
+  dataDir: string
+  authNotice: string
+  githubProxy: string
+  logAutoRefresh: boolean
+  logRefreshInterval: number
+}
+
+export interface SettingsInput {
+  githubProxy: string
+  logAutoRefresh: boolean
+  logRefreshInterval: number
+}
+
+export interface User {
+  id: string
+  username: string
+  role: 'admin'
+  enabled: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AuthStatus {
+  bootstrapped: boolean
+  authenticated: boolean
+  user?: User
+}
+
+export interface AuthInput {
+  accessKey: string
+}
+
+export interface AuthSession {
+  user: User
+  session?: Session
+}
+
+export interface Session {
+  id: string
+  ip: string
+  userAgent: string
+  createdAt: string
+  lastAccessAt: string
+  expiresAt: string
+  revokedAt?: string
+  current?: boolean
+}
+
+export interface AccessKeyInput {
+  currentAccessKey: string
+  newAccessKey: string
+}
+
+export interface Dashboard {
+  summary: Summary
+  servers: Server[]
+  health: HealthEvent[]
+  currentFrpc: FrpcVersion
+  settings: Settings
+}
+
+export interface LogLine {
+  time: string
+  level: string
+  message: string
+}
+
+export interface ActionResult {
+  ok: boolean
+  message: string
+  output?: string
+}
+
+export interface ConfigPreview {
+  configPath: string
+  content: string
+}
+
+export interface ConfigBundle {
+  version: number
+  exportedAt: string
+  includeSensitive: boolean
+  servers: Array<{ server: Server; rules: ProxyRule[] }>
+  versions?: FrpcVersion[]
+  githubProxy?: string
+  logAutoRefresh: boolean
+  logRefreshInterval: number
+}
+
+export interface ConfigImportInput {
+  mode: 'merge' | 'replace'
+  bundle: ConfigBundle
+}
+
+export interface OnlineInstallInput {
+  version: string
+  platform: string
+  arch: string
+  githubProxy: string
+}
+
+export interface LatestVersionInput {
+  githubProxy: string
+}
+
+export interface LatestVersionResult {
+  latest: string
+}
+
+export interface AuditLog {
+  id: string
+  userId: string
+  username: string
+  role: string
+  ip: string
+  userAgent: string
+  action: string
+  resourceType: string
+  resourceId: string
+  result: 'success' | 'failure'
+  error?: string
+  createdAt: string
+}
+
+export interface AuditLogPage {
+  items: AuditLog[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+export interface AuditLogQuery {
+  page?: number
+  pageSize?: number
+  action?: string
+  user?: string
+  result?: string
+}
+
+export interface StatsSummary {
+  totalServers: number
+  runningServers: number
+  proxyRules: number
+  onlineProxies: number
+  errorProxies: number
+  trafficAvailable: boolean
+  totalTrafficIn: number
+  totalTrafficOut: number
+}
+
+export interface ServerStats {
+  serverId: string
+  name: string
+  status: string
+  adminAddr: string
+  adminPort: number
+  configMode: string
+  proxyCount: number
+  onlineProxies: number
+  errorProxies: number
+  trafficAvailable: boolean
+  trafficIn: number
+  trafficOut: number
+  error?: string
+  sampledAt: string
+}
+
+export interface ProxyStats {
+  serverId: string
+  serverName: string
+  name: string
+  type: string
+  status: string
+  localAddr: string
+  remoteAddr: string
+  trafficAvailable: boolean
+  trafficIn: number
+  trafficOut: number
+  error?: string
+}
+
+export interface StatsError {
+  serverId: string
+  serverName: string
+  proxyName?: string
+  message: string
+}
+
+export interface Stats {
+  summary: StatsSummary
+  servers: ServerStats[]
+  proxies: ProxyStats[]
+  errors: StatsError[]
+  sampledAt: string
+}
+
+const http = axios.create({
+  baseURL: '/api',
+  timeout: 120000,
+})
+
+export async function getAuthStatus() {
+  const { data } = await http.get<AuthStatus>('/auth/status')
+  return data
+}
+
+export async function bootstrapAdmin(input: AuthInput) {
+  const { data } = await http.post<AuthSession>('/auth/bootstrap', input)
+  return data
+}
+
+export async function login(input: AuthInput) {
+  const { data } = await http.post<AuthSession>('/auth/login', input)
+  return data
+}
+
+export async function logout() {
+  const { data } = await http.post<{ ok: boolean }>('/auth/logout')
+  return data
+}
+
+export async function getMe() {
+  const { data } = await http.get<User>('/auth/me')
+  return data
+}
+
+export async function getSessions() {
+  const { data } = await http.get<Session[]>('/auth/sessions')
+  return data
+}
+
+export async function revokeSession(id: string) {
+  const { data } = await http.delete<{ ok: boolean }>(`/auth/sessions/${id}`)
+  return data
+}
+
+export async function revokeOtherSessions() {
+  const { data } = await http.post<{ ok: boolean }>('/auth/sessions/revoke-others')
+  return data
+}
+
+export async function changeAccessKey(input: AccessKeyInput) {
+  const { data } = await http.post<{ ok: boolean }>('/auth/access-key', input)
+  return data
+}
+
+export async function getAuditLogs(query: AuditLogQuery = {}) {
+  const { data } = await http.get<AuditLogPage>('/audit-logs', { params: query })
+  return data
+}
+
+export async function getDashboard() {
+  const { data } = await http.get<Dashboard>('/dashboard')
+  return data
+}
+
+export async function getStats() {
+  const { data } = await http.get<Stats>('/stats')
+  return data
+}
+
+export async function getSettings() {
+  const { data } = await http.get<Settings>('/settings')
+  return data
+}
+
+export async function updateSettings(input: SettingsInput) {
+  const { data } = await http.put<Settings>('/settings', input)
+  return data
+}
+
+export async function exportConfig(includeSensitive = false) {
+  const { data } = await http.get<ConfigBundle>('/config/export', {
+    params: { includeSensitive },
+  })
+  return data
+}
+
+export async function importConfig(input: ConfigImportInput) {
+  const { data } = await http.post<ActionResult>('/config/import', input)
+  return data
+}
+
+export async function getServers() {
+  const { data } = await http.get<Server[]>('/servers')
+  return data
+}
+
+export async function getServer(id: string) {
+  const { data } = await http.get<Server>(`/servers/${id}`)
+  return data
+}
+
+export async function createServer(input: ServerInput) {
+  const { data } = await http.post<Server>('/servers', input)
+  return data
+}
+
+export async function updateServer(id: string, input: ServerInput) {
+  const { data } = await http.put<Server>(`/servers/${id}`, input)
+  return data
+}
+
+export async function deleteServer(id: string) {
+  const { data } = await http.delete<{ ok: boolean }>(`/servers/${id}`)
+  return data
+}
+
+export async function startServer(id: string) {
+  const { data } = await http.post<ActionResult>(`/servers/${id}/start`)
+  return data
+}
+
+export async function stopServer(id: string) {
+  const { data } = await http.post<ActionResult>(`/servers/${id}/stop`)
+  return data
+}
+
+export async function restartServer(id: string) {
+  const { data } = await http.post<ActionResult>(`/servers/${id}/restart`)
+  return data
+}
+
+export async function reloadServer(id: string) {
+  const { data } = await http.post<ActionResult>(`/servers/${id}/reload`)
+  return data
+}
+
+export async function checkServer(id: string) {
+  const { data } = await http.post<ActionResult>(`/servers/${id}/check`)
+  return data
+}
+
+export async function getServerRules(serverId: string) {
+  const { data } = await http.get<ProxyRule[]>(`/servers/${serverId}/rules`)
+  return data
+}
+
+export async function createRule(serverId: string, input: ProxyRuleInput) {
+  const { data } = await http.post<ProxyRule>(`/servers/${serverId}/rules`, input)
+  return data
+}
+
+export async function updateRule(serverId: string, ruleId: string, input: ProxyRuleInput) {
+  const { data } = await http.put<ProxyRule>(`/servers/${serverId}/rules/${ruleId}`, input)
+  return data
+}
+
+export async function deleteRule(serverId: string, ruleId: string) {
+  const { data } = await http.delete<{ ok: boolean }>(`/servers/${serverId}/rules/${ruleId}`)
+  return data
+}
+
+export async function getServerLogs(serverId: string, tail = 200) {
+  const { data } = await http.get<LogLine[]>(`/servers/${serverId}/logs`, {
+    params: { tail },
+  })
+  return data
+}
+
+export async function getConfigPreview(serverId: string) {
+  const { data } = await http.get<ConfigPreview>(`/servers/${serverId}/config/preview`)
+  return data
+}
+
+export async function getFrpcVersion() {
+  const { data } = await http.get<FrpcVersion>('/frpc/version')
+  return data
+}
+
+export async function getFrpcVersions() {
+  const { data } = await http.get<FrpcVersion[]>('/frpc/versions')
+  return data
+}
+
+export async function activateFrpcVersion(id: string) {
+  const { data } = await http.post<FrpcVersion>(`/frpc/versions/${id}/activate`)
+  return data
+}
+
+export async function checkLatestFrpc(input: LatestVersionInput) {
+  const { data } = await http.post<LatestVersionResult>('/frpc/check-latest', input)
+  return data
+}
+
+export async function installFrpcOnline(input: OnlineInstallInput) {
+  const { data } = await http.post<FrpcVersion>('/frpc/install/online', input)
+  return data
+}
+
+export async function installFrpcOffline(file: File) {
+  const body = new FormData()
+  body.append('file', file)
+  const { data } = await http.post<FrpcVersion>('/frpc/install/offline', body)
+  return data
+}
