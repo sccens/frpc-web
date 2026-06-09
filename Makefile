@@ -1,4 +1,4 @@
-.PHONY: dev-api build-web test build run release install-linux install-oneclick-linux
+.PHONY: dev-api build-web test build run release install-linux install
 
 dev-api:
 	go run ./cmd/frpc-web
@@ -23,5 +23,5 @@ release:
 install-linux: build
 	sh scripts/install-linux.sh
 
-install-oneclick-linux:
-	sh scripts/install-oneclick-linux.sh
+install:
+	sh scripts/install.sh

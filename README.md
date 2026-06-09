@@ -77,7 +77,7 @@ GitHub 代理优先级：
 一键安装脚本位于：
 
 ```text
-scripts/install-oneclick-linux.sh
+scripts/install.sh
 ```
 
 推荐生产环境优先使用该脚本。脚本会构建单二进制、安装 systemd 服务、生成 Access Key、启动服务，并输出访问地址。
@@ -85,24 +85,25 @@ scripts/install-oneclick-linux.sh
 一键脚本优先使用本机 Go、Node.js、npm 和 make 构建；如果本机工具链不可用，但已安装 Docker，则会自动改用 Docker 构建并提取生产二进制。
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/sccens/frpc-web.git
 cd frpc-web
-sudo scripts/install-oneclick-linux.sh
+sudo scripts/install.sh
 ```
 
-如果希望监听公网地址，可以显式传入监听地址。公网暴露仍建议叠加 HTTPS 和访问控制：
-
-```bash
-sudo env FRPC_WEB_ADDR=0.0.0.0:8080 scripts/install-oneclick-linux.sh
-```
-
-脚本默认使用本机监听地址：
+脚本开始时会让你选择监听地址：
 
 ```text
-http://127.0.0.1:8080
+1) 127.0.0.1 - 仅本机访问，适合 SSH 隧道或反向代理
+2) 0.0.0.0   - 监听服务器/虚拟机网卡，便于从同网络访问
 ```
 
-远程服务器建议通过 SSH 隧道访问：
+如果希望自动化安装，也可以显式传入监听地址。公网暴露仍建议叠加 HTTPS 和访问控制：
+
+```bash
+sudo env FRPC_WEB_ADDR=0.0.0.0:8080 scripts/install.sh
+```
+
+如果选择 `127.0.0.1`，远程服务器建议通过 SSH 隧道访问：
 
 ```bash
 ssh -L 8080:127.0.0.1:8080 user@your-server
@@ -113,7 +114,7 @@ ssh -L 8080:127.0.0.1:8080 user@your-server
 在构建机或目标机安装 Go、Node.js 和 make 后执行：
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/sccens/frpc-web.git
 cd frpc-web
 make build
 sudo scripts/install-linux.sh
