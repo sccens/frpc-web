@@ -57,7 +57,6 @@ chown root:root "$ENV_FILE"
 chmod 0640 "$ENV_FILE"
 
 install -m 0755 -o root -g root "$ROOT_DIR/scripts/install-linux.sh" "$SCRIPTS_DIR/install-linux.sh"
-install -m 0755 -o root -g root "$ROOT_DIR/scripts/install.sh" "$SCRIPTS_DIR/install.sh"
 install -m 0755 -o root -g root "$ROOT_DIR/scripts/uninstall-linux.sh" "$SCRIPTS_DIR/uninstall-linux.sh"
 install -m 0644 -o root -g root "$ROOT_DIR/deploy/frpc-web.service" "$SERVICE_FILE"
 

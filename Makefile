@@ -1,4 +1,4 @@
-.PHONY: dev-api build-web test build run release install-linux install
+.PHONY: dev-api build-web test build run release install-linux
 
 dev-api:
 	go run ./cmd/frpc-web
@@ -22,6 +22,3 @@ release:
 
 install-linux: build
 	sh scripts/install-linux.sh
-
-install:
-	sh scripts/install.sh

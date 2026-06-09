@@ -72,44 +72,9 @@ GitHub 代理优先级：
 /opt/frpc-web/scripts
 ```
 
-### 一键安装脚本
+### systemd 部署
 
-一键安装脚本位于：[scripts/install.sh](https://github.com/sccens/frpc-web/blob/main/scripts/install.sh)。
-
-推荐生产环境优先使用该脚本。脚本会构建单二进制、安装 systemd 服务、生成 Access Key、启动服务，并输出访问地址。
-
-一键脚本优先使用本机 Go、Node.js、npm 和 make 构建；如果本机工具链不可用，但已安装 Docker，则会自动改用 Docker 构建并提取生产二进制。
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/sccens/frpc-web/main/scripts/install.sh | sudo sh
-```
-
-脚本会自动拉取 GitHub 上的项目源码并完成构建、安装和启动；如果已经在源码目录中运行，也会直接使用当前源码。
-
-脚本开始时会让你选择监听地址：
-
-```text
-1) 127.0.0.1 - 仅本机访问，适合 SSH 隧道或反向代理
-2) 0.0.0.0   - 监听服务器/虚拟机网卡，便于从同网络访问
-```
-
-默认端口为 `8080`。如果需要自定义端口，可以通过 `FRPC_WEB_ADDR` 显式传入。
-
-如果希望自动化安装，也可以显式传入监听地址。公网暴露仍建议叠加 HTTPS 和访问控制：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/sccens/frpc-web/main/scripts/install.sh | sudo env FRPC_WEB_ADDR=0.0.0.0:8080 sh
-```
-
-如果选择 `127.0.0.1`，远程服务器建议通过 SSH 隧道访问：
-
-```bash
-ssh -L 8080:127.0.0.1:8080 user@your-server
-```
-
-如果你不想使用一键脚本，也可以手动构建和安装。
-
-在构建机或目标机安装 Go、Node.js 和 make 后执行：
+在目标机安装 Go、Node.js、npm 和 make 后执行：
 
 ```bash
 git clone https://github.com/sccens/frpc-web.git
@@ -118,10 +83,14 @@ make build
 sudo scripts/install-linux.sh
 ```
 
-按需编辑环境变量：
+安装脚本只负责复制已构建的二进制、创建专用低权限用户 `frpc-web`、安装 systemd unit，并执行 `systemctl enable frpc-web.service`。它不会拉取源码、安装构建工具或自动启动服务。
+
+按需编辑环境变量，然后手动启动：
 
 ```bash
 sudo nano /opt/frpc-web/frpc-web.env
+sudo systemctl start frpc-web
+sudo systemctl status frpc-web
 ```
 
 常用生产配置示例：
@@ -135,14 +104,13 @@ FRPC_WEB_JWT_SECRET=
 FRPC_WEB_TRUSTED_PROXY=
 ```
 
-启动并设置开机自启：
+如果把 `FRPC_WEB_ADDR` 改成 `0.0.0.0:8080`，可以从服务器或虚拟机所在网络访问。公网暴露仍建议叠加 HTTPS 和访问控制。
+
+如果保持 `127.0.0.1:8080`，远程服务器建议通过 SSH 隧道访问：
 
 ```bash
-sudo systemctl start frpc-web
-sudo systemctl status frpc-web
+ssh -L 8080:127.0.0.1:8080 user@your-server
 ```
-
-安装脚本会创建专用低权限用户 `frpc-web`，安装 systemd unit，并执行 `systemctl enable frpc-web.service`。
 
 查看日志：
 
