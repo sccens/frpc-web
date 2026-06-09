@@ -4,6 +4,10 @@ FRPC Web 是一个浏览器化的 `frpc` 管理器，目标是让个人用户在
 
 当前定位是 **Linux first / 单管理员 / 本机部署优先**。项目默认使用单个 Access Key 登录，不提供多用户和 RBAC 管理页。
 
+## 开发说明
+
+本项目由 OpenAI Codex 辅助开发。Codex 参与了需求整理、架构拆分、后端实现、前端实现、测试补充、文档整理和部署脚本迭代，并辅助完成了绝大多数代码。
+
 ## 功能概览
 
 - 多服务器管理：新增、编辑、删除 FRP 服务器配置，支持自动启动、状态展示和崩溃自愈。
@@ -22,7 +26,7 @@ FRPC Web 是一个浏览器化的 `frpc` 管理器，目标是让个人用户在
 开发环境直接运行：
 
 ```bash
-git clone git@github.com:sccens/frpc-web.git
+git clone <repository-url>
 cd frpc-web
 cd web && npm install && npm run build
 cd ..
@@ -68,10 +72,48 @@ GitHub 代理优先级：
 /opt/frpc-web/scripts
 ```
 
+### 一键安装脚本
+
+一键安装脚本位于：
+
+```text
+scripts/install-oneclick-linux.sh
+```
+
+推荐生产环境优先使用该脚本。脚本会构建单二进制、安装 systemd 服务、生成 Access Key、启动服务，并输出访问地址。
+
+一键脚本优先使用本机 Go、Node.js、npm 和 make 构建；如果本机工具链不可用，但已安装 Docker，则会自动改用 Docker 构建并提取生产二进制。
+
+```bash
+git clone <repository-url>
+cd frpc-web
+sudo scripts/install-oneclick-linux.sh
+```
+
+如果希望监听公网地址，可以显式传入监听地址。公网暴露仍建议叠加 HTTPS 和访问控制：
+
+```bash
+sudo env FRPC_WEB_ADDR=0.0.0.0:8080 scripts/install-oneclick-linux.sh
+```
+
+脚本默认使用本机监听地址：
+
+```text
+http://127.0.0.1:8080
+```
+
+远程服务器建议通过 SSH 隧道访问：
+
+```bash
+ssh -L 8080:127.0.0.1:8080 user@your-server
+```
+
+如果你不想使用一键脚本，也可以手动构建和安装。
+
 在构建机或目标机安装 Go、Node.js 和 make 后执行：
 
 ```bash
-git clone git@github.com:sccens/frpc-web.git
+git clone <repository-url>
 cd frpc-web
 make build
 sudo scripts/install-linux.sh
@@ -89,7 +131,7 @@ sudo nano /opt/frpc-web/frpc-web.env
 FRPC_WEB_ADDR=127.0.0.1:8080
 FRPC_WEB_DATA_DIR=/opt/frpc-web/data
 FRPC_WEB_ACCESS_KEY=change-me-to-a-long-random-key
-FRPC_WEB_GITHUB_PROXY=https://proxyd.sccens.eu.cc/
+FRPC_WEB_GITHUB_PROXY=
 FRPC_WEB_JWT_SECRET=
 FRPC_WEB_TRUSTED_PROXY=
 ```
@@ -135,7 +177,7 @@ sudo /opt/frpc-web/scripts/uninstall-linux.sh --purge-data
 Docker 构建不要求宿主机安装 Go 或 Node.js：
 
 ```bash
-git clone git@github.com:sccens/frpc-web.git
+git clone <repository-url>
 cd frpc-web
 docker compose up -d --build
 ```
@@ -163,7 +205,7 @@ FRPC_WEB_TRUSTED_PROXY=
 ```yaml
 environment:
   FRPC_WEB_ACCESS_KEY: "change-me-to-a-long-random-key"
-  FRPC_WEB_GITHUB_PROXY: "https://proxyd.sccens.eu.cc/"
+  FRPC_WEB_GITHUB_PROXY: ""
 ```
 
 数据保存在命名卷 `frpc-web-data` 的 `/data` 中。查看状态和日志：
