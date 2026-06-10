@@ -14,7 +14,11 @@
 
 ## 快速开始
 
+发布产物是**单个静态二进制**（前端已内嵌，`CGO_ENABLED=0` 编译）：全新的 Linux/macOS 机器上不需要安装 Go、Node、数据库或任何运行库，下载即可运行。frpc 本体也无需预装——首次使用时在网页里在线下载，或离线上传 frp 的 tar.gz 包。
+
 ### 一键安装（Linux / macOS）
+
+需要 `bash` 和 `curl`（或 `wget`），脚本会自动识别系统和架构、校验 SHA256 并安装到 `/usr/local/bin`：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sccens/frpc-web/main/install.sh | bash
@@ -23,7 +27,7 @@ frpc-web
 
 ### 手动安装
 
-从 [Releases](https://github.com/sccens/frpc-web/releases) 下载对应平台的二进制（Linux amd64/arm64、macOS Intel/Apple Silicon）：
+极简系统（如无 bash 的容器环境）可直接手动安装。从 [Releases](https://github.com/sccens/frpc-web/releases) 下载对应平台的二进制（Linux amd64/arm64、macOS Intel/Apple Silicon）：
 
 ```bash
 chmod +x frpc-web_*
@@ -111,6 +115,15 @@ server {
     }
 }
 ```
+
+## 脚本一览
+
+| 脚本 | 用途 | 用法 |
+| --- | --- | --- |
+| `install.sh`（仓库根目录） | 从 GitHub Releases 下载最新二进制，SHA256 校验后安装到 `/usr/local/bin` | `curl -fsSL https://raw.githubusercontent.com/sccens/frpc-web/main/install.sh \| bash`，可用 `INSTALL_DIR=` 覆盖安装目录 |
+| `scripts/install-linux.sh` | 安装为 systemd 服务（创建 `frpc-web` 用户、`/opt/frpc-web` 目录、env 文件和 service） | 在仓库内执行 `sudo ./scripts/install-linux.sh`；二进制默认取 `bin/frpc-web`（`make build` 产物），也可用 `sudo SOURCE_BIN=/usr/local/bin/frpc-web ./scripts/install-linux.sh` 复用已安装的二进制 |
+| `scripts/uninstall-linux.sh` | 卸载 systemd 服务 | `sudo /opt/frpc-web/scripts/uninstall-linux.sh`，加 `--purge-data` 同时删除数据 |
+| `scripts/build-release.sh` | 构建全平台发布产物（linux/darwin × amd64/arm64）到 `dist/` 并生成 SHA256SUMS | `make release`，可用 `VERSION=` 注入版本号 |
 
 ## 开发
 
