@@ -23,8 +23,12 @@ const navItems = [
 const router = useRouter()
 
 async function signOut() {
-  await logout()
-  await router.replace('/login')
+  try {
+    await logout()
+  } finally {
+    // 注销请求失败也要回到登录页，避免用户被卡在已失效的会话里
+    await router.replace('/login')
+  }
 }
 </script>
 

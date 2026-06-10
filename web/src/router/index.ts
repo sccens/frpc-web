@@ -35,8 +35,15 @@ export const router = createRouter({
 })
 
 router.beforeEach(async (to) => {
-  const status = await getAuthStatus()
   const isPublic = Boolean(to.meta.public)
+  let status
+  try {
+    status = await getAuthStatus()
+  } catch {
+    // 后端暂时不可达时放行导航，避免整个应用卡死；
+    // 页面内的请求会展示各自的错误提示。
+    return true
+  }
 
   if (!status.bootstrapped) {
     return to.name === 'bootstrap' ? true : { name: 'bootstrap', query: { redirect: to.fullPath } }

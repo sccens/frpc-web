@@ -85,8 +85,13 @@ watch(refreshInterval, () => {
   }
 })
 
-async function load() {
-  loading.value = true
+// 后台轮询时不再触发全页 loading 遮罩；inFlight 防止慢响应下的并发请求乱序覆盖数据。
+let inFlight = false
+
+async function load(silent = false) {
+  if (inFlight) return
+  inFlight = true
+  if (!silent) loading.value = true
   error.value = ''
   try {
     stats.value = await getStats()
@@ -100,7 +105,8 @@ async function load() {
   } catch (err) {
     error.value = errorMessage(err, '加载失败')
   } finally {
-    loading.value = false
+    inFlight = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -303,7 +309,7 @@ function getCssVar(name: string, fallback: string) {
 function startAutoRefresh() {
   stopAutoRefresh()
   timer = setInterval(() => {
-    void load()
+    void load(true)
   }, refreshInterval.value * 1000)
 }
 
@@ -376,7 +382,7 @@ const totalTraffic = computed(() => {
           <el-option :value="10" label="10 秒" />
           <el-option :value="30" label="30 秒" />
         </el-select>
-        <button class="primary-action" type="button" :disabled="loading" @click="load">
+        <button class="primary-action" type="button" :disabled="loading" @click="load()">
           <Activity :size="15" :stroke-width="1.8" />
           刷新
         </button>

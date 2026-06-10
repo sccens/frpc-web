@@ -76,6 +76,8 @@ async function loadSettings() {
   try {
     settings.value = await getSettings()
     githubProxy.value = settings.value.githubProxy || ''
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '加载设置失败'))
   } finally {
     loading.value = false
   }
@@ -87,6 +89,8 @@ async function loadVersions() {
     const [current, list] = await Promise.all([getFrpcVersion(), getFrpcVersions()])
     version.value = current
     versions.value = list
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '加载 frpc 版本信息失败'))
   } finally {
     versionLoading.value = false
   }

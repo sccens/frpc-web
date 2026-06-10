@@ -80,6 +80,8 @@ async function loadServers() {
   loading.value = true
   try {
     servers.value = await getServers()
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '加载服务器列表失败'))
   } finally {
     loading.value = false
   }
@@ -179,11 +181,15 @@ async function saveServer() {
 
 async function removeServer() {
   if (!editingServerId.value) return
-  await ElMessageBox.confirm('删除该服务器会同时删除其代理规则。', '删除服务器', {
-    type: 'warning',
-    confirmButtonText: '删除',
-    cancelButtonText: '取消',
-  })
+  try {
+    await ElMessageBox.confirm('删除该服务器会同时删除其代理规则。', '删除服务器', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
   saving.value = true
   try {
     await deleteServer(editingServerId.value)
@@ -259,11 +265,15 @@ async function saveRule() {
 }
 
 async function removeRule(rule: RuleRow) {
-  await ElMessageBox.confirm(`删除规则 ${rule.name}？`, '删除代理规则', {
-    type: 'warning',
-    confirmButtonText: '删除',
-    cancelButtonText: '取消',
-  })
+  try {
+    await ElMessageBox.confirm(`删除规则 ${rule.name}？`, '删除代理规则', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
   try {
     await deleteRule(rule.serverId, rule.id)
     ElMessage.success('规则已删除')
