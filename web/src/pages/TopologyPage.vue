@@ -201,7 +201,7 @@ function buildOverviewNodes() {
       title: group.endpoint,
       subtitle: `${group.cards.length} 个服务端配置使用此入口`,
       badge: getGroupTransportBadge(group.cards),
-    }, 250))
+    }, 300))
 
     let cardOffsetY = group.startY
     group.cards.forEach((card) => {
@@ -215,7 +215,7 @@ function buildOverviewNodes() {
           subtitle: '启用代理规则后会出现在这里',
           badge: '空闲',
         }, 230))
-        nodes.push(createNode(`overview-public-empty-${card.server.id}`, 'empty', 980, centerY, {
+        nodes.push(createNode(`overview-public-empty-${card.server.id}`, 'empty', 1030, centerY, {
           label: '公网访问',
           title: '公网入口待生成',
           subtitle: '配置远端端口或域名后显示',
@@ -225,7 +225,7 @@ function buildOverviewNodes() {
         card.previewRules.forEach((rule, index) => {
           const rowY = cardOffsetY + index * OVERVIEW_ROW_GAP
           nodes.push(createNode(getOverviewRuleNodeId('local', card, rule), 'local-service', 0, rowY, createLocalRuleData(rule), 230))
-          nodes.push(createNode(getOverviewRuleNodeId('public', card, rule), 'public-entry', 980, rowY, createPublicRuleData(card.server, rule), 250))
+          nodes.push(createNode(getOverviewRuleNodeId('public', card, rule), 'public-entry', 1030, rowY, createPublicRuleData(rule), 250))
         })
 
         if (card.hiddenRules > 0) {
@@ -236,7 +236,7 @@ function buildOverviewNodes() {
             subtitle: '进入该服务端配置查看完整链路',
             badge: '已折叠',
           }, 230))
-          nodes.push(createNode(`overview-more-public-${card.server.id}`, 'more', 980, rowY, {
+          nodes.push(createNode(`overview-more-public-${card.server.id}`, 'more', 1030, rowY, {
             label: '更多公网入口',
             title: `还有 ${card.hiddenRules} 个入口`,
             subtitle: '与左侧折叠服务一一对应',
@@ -312,7 +312,7 @@ function buildDetailNodes() {
       subtitle: '创建并启用代理后，这里会显示连接路径。',
       badge: '空闲',
     }, 240))
-    nodes.push(createNode('detail-public-empty', 'empty', 980, centerY, {
+    nodes.push(createNode('detail-public-empty', 'empty', 1030, centerY, {
       label: '公网访问',
       title: '公网入口待生成',
       subtitle: '配置远端端口或域名后显示',
@@ -321,7 +321,7 @@ function buildDetailNodes() {
   } else {
     detailVisibleRules.value.forEach((rule, index) => {
       nodes.push(createNode(`detail-local-${rule.id}`, 'local-service', 0, index * DETAIL_ROW_GAP, createLocalRuleData(rule), 250))
-      nodes.push(createNode(`detail-public-${rule.id}`, 'public-entry', 980, index * DETAIL_ROW_GAP, createPublicRuleData(currentServer.value!, rule), 250))
+      nodes.push(createNode(`detail-public-${rule.id}`, 'public-entry', 1030, index * DETAIL_ROW_GAP, createPublicRuleData(rule), 250))
     })
 
     if (detailHiddenRules.value > 0) {
@@ -331,7 +331,7 @@ function buildDetailNodes() {
         subtitle: '已折叠，避免拓扑过密',
         badge: '已折叠',
       }, 250))
-      nodes.push(createNode('detail-more-public', 'more', 980, detailVisibleRules.value.length * DETAIL_ROW_GAP, {
+      nodes.push(createNode('detail-more-public', 'more', 1030, detailVisibleRules.value.length * DETAIL_ROW_GAP, {
         label: '更多公网入口',
         title: `还有 ${detailHiddenRules.value} 个入口`,
         subtitle: '与左侧折叠服务一一对应',
@@ -353,7 +353,7 @@ function buildDetailNodes() {
     title: getServerEndpoint(currentServer.value),
     subtitle: currentServer.value.name,
     badge: getTransportText(currentServer.value.transportProtocol),
-  }, 240))
+  }, 300))
 
   return nodes
 }
@@ -488,10 +488,10 @@ function createLocalRuleData(rule: ProxyRule): Omit<TopologyNodeData, 'kind'> {
   }
 }
 
-function createPublicRuleData(server: ServerType, rule: ProxyRule): Omit<TopologyNodeData, 'kind'> {
+function createPublicRuleData(rule: ProxyRule): Omit<TopologyNodeData, 'kind'> {
   return {
     label: '公网访问',
-    title: publicEndpoint(server, rule),
+    title: publicEndpoint(rule),
     subtitle: getPublicEndpointHint(rule),
     badge: '入口',
   }
@@ -517,7 +517,8 @@ function localEndpoint(rule: ProxyRule) {
   return `${rule.localIp || '127.0.0.1'}:${rule.localPort || '-'}`
 }
 
-function publicEndpoint(server: ServerType, rule: ProxyRule) {
+// 公网访问卡片只展示端口/域名；服务端地址统一在“服务端入口”卡片上显示
+function publicEndpoint(rule: ProxyRule) {
   if (rule.type === 'http' || rule.type === 'https') {
     const domains = rule.customDomains?.map((domain) => domain.trim()).filter(Boolean) ?? []
     if (domains.length > 0) return domains.join(', ')
@@ -525,7 +526,7 @@ function publicEndpoint(server: ServerType, rule: ProxyRule) {
   }
 
   const port = rule.remotePort || rule.bindPort
-  return formatEndpoint(normalizeEndpointAddr(server.serverAddr), port || '待配置')
+  return port ? `端口 ${port}` : '端口待配置'
 }
 
 function getLocalPortLabel(rule: ProxyRule) {
@@ -948,6 +949,12 @@ function formatEndpoint(addr: string, port: number | string) {
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 服务端入口显示完整地址：允许换行而不是截断 */
+.flow-card-frps h3 {
+  white-space: normal;
+  word-break: break-all;
 }
 
 .flow-label {
