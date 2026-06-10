@@ -18,11 +18,19 @@
 
 ### 一键安装（Linux / macOS）
 
-需要 `bash` 和 `curl`（或 `wget`），脚本会自动识别系统和架构、校验 SHA256 并安装到 `/usr/local/bin`：
+需要 `bash` 和 `curl`（或 `wget`）。脚本会自动识别系统和架构、校验 SHA256、安装到 `/usr/local/bin`；**Linux 上检测到 systemd 时会自动注册并启动系统服务（开机自启）**，装完即可用：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sccens/frpc-web/main/install.sh | bash
-frpc-web
+```
+
+macOS 或加了 `SKIP_SERVICE=1` 时只安装二进制，手动运行 `frpc-web` 启动。
+
+升级直接重跑安装命令（配置会保留）；卸载：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sccens/frpc-web/main/install.sh | bash -s -- --uninstall
+# 加 --purge-data 连数据一起删除
 ```
 
 ### 手动安装
@@ -70,20 +78,21 @@ export FRPC_WEB_ACCESS_KEY=change-me-to-a-long-random-key
 
 ### systemd（Linux）
 
+一键安装已自动完成 systemd 配置（创建 `frpc-web` 系统用户、`/opt/frpc-web/frpc-web.env` 配置文件、注册并启动服务），无需额外步骤：
+
 ```bash
-# 下载预编译二进制（安装到 /usr/local/bin）
 curl -fsSL https://raw.githubusercontent.com/sccens/frpc-web/main/install.sh | bash
-
-# 获取仓库（安装脚本和 systemd 服务文件在仓库内）
-git clone https://github.com/sccens/frpc-web.git
-cd frpc-web
-sudo SOURCE_BIN=/usr/local/bin/frpc-web ./scripts/install-linux.sh
-
-# 按需编辑 /opt/frpc-web/frpc-web.env，然后启动
-sudo systemctl start frpc-web
 ```
 
-查看日志：`journalctl -u frpc-web -f`。更新版本：重跑 install.sh 后 `sudo systemctl restart frpc-web`。卸载：`sudo /opt/frpc-web/scripts/uninstall-linux.sh`（加 `--purge-data` 同时删除数据）。
+常用命令：
+
+```bash
+systemctl status frpc-web        # 查看状态
+journalctl -u frpc-web -f        # 查看日志
+sudo nano /opt/frpc-web/frpc-web.env && sudo systemctl restart frpc-web  # 改配置并生效
+```
+
+从源码构建并安装为服务：`make install-linux`（等价于 `SOURCE_BIN=bin/frpc-web bash install.sh`）。更新版本：重跑安装命令即可，配置保留、服务自动重启。卸载：`make uninstall-linux` 或安装命令加 `--uninstall`。
 
 ### Docker 模式说明
 
@@ -118,12 +127,19 @@ server {
 
 ## 脚本一览
 
-| 脚本 | 用途 | 用法 |
-| --- | --- | --- |
-| `install.sh`（仓库根目录） | 从 GitHub Releases 下载最新二进制，SHA256 校验后安装到 `/usr/local/bin` | `curl -fsSL https://raw.githubusercontent.com/sccens/frpc-web/main/install.sh \| bash`，可用 `INSTALL_DIR=` 覆盖安装目录 |
-| `scripts/install-linux.sh` | 安装为 systemd 服务（创建 `frpc-web` 用户、`/opt/frpc-web` 目录、env 文件和 service） | 在仓库内执行 `sudo ./scripts/install-linux.sh`；二进制默认取 `bin/frpc-web`（`make build` 产物），也可用 `sudo SOURCE_BIN=/usr/local/bin/frpc-web ./scripts/install-linux.sh` 复用已安装的二进制 |
-| `scripts/uninstall-linux.sh` | 卸载 systemd 服务 | `sudo /opt/frpc-web/scripts/uninstall-linux.sh`，加 `--purge-data` 同时删除数据 |
-| `scripts/build-release.sh` | 构建全平台发布产物（linux/darwin × amd64/arm64）到 `dist/` 并生成 SHA256SUMS | `make release`，可用 `VERSION=` 注入版本号 |
+所有安装、升级、卸载操作统一由根目录的 `install.sh` 完成：
+
+| 操作 | 命令 |
+| --- | --- |
+| 在线安装（自动配 systemd） | `curl -fsSL https://raw.githubusercontent.com/sccens/frpc-web/main/install.sh \| bash` |
+| 只装二进制（不配服务） | 同上，前面加 `SKIP_SERVICE=1` |
+| 安装本地构建的二进制 | `SOURCE_BIN=bin/frpc-web bash install.sh`（即 `make install-linux`） |
+| 升级 | 重跑安装命令（配置保留，服务自动重启） |
+| 卸载（保留数据） | 安装命令末尾加 `-s -- --uninstall`，本地执行则 `bash install.sh --uninstall` |
+| 卸载（删除数据） | 再加 `--purge-data` |
+| 自定义安装目录 | 前面加 `INSTALL_DIR=/path` |
+
+开发用脚本：`scripts/build-release.sh` 构建全平台发布产物（linux/darwin × amd64/arm64）到 `dist/` 并生成 SHA256SUMS，通过 `make release` 调用，可用 `VERSION=` 注入版本号。
 
 ## 开发
 
@@ -147,3 +163,5 @@ make release
 ## 许可证
 
 MIT。基于 [fatedier/frp](https://github.com/fatedier/frp) 与 [Element Plus](https://element-plus.org/) 构建，欢迎提交 [Issue](https://github.com/sccens/frpc-web/issues) 和 Pull Request。
+
+本项目在 [Claude](https://www.claude.com/product/claude-code) 与 [Codex](https://openai.com/codex/) 的协助下开发。

@@ -1,4 +1,4 @@
-.PHONY: dev-api build-web test build run release install-linux
+.PHONY: dev-api build-web test build run release install-linux uninstall-linux
 
 dev-api:
 	go run ./cmd/frpc-web
@@ -21,4 +21,7 @@ release:
 	sh scripts/build-release.sh
 
 install-linux: build
-	sh scripts/install-linux.sh
+	SOURCE_BIN=bin/frpc-web bash install.sh
+
+uninstall-linux:
+	bash install.sh --uninstall
