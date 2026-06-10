@@ -8,6 +8,8 @@ COPY web/ ./
 RUN npm run build
 
 FROM golang:1.26-bookworm AS go-build
+# go.mod 钉了补丁版本；允许按需下载匹配的工具链，避免镜像标签落后时构建失败
+ENV GOTOOLCHAIN=auto
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

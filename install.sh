@@ -61,16 +61,28 @@ detect_arch() {
     info "检测到架构: $ARCH"
 }
 
+# 下载文件到指定路径
+fetch() {
+    # $1: URL, $2: 输出路径
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL -o "$2" "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$2" "$1"
+    else
+        error "需要 curl 或 wget 来下载文件"
+    fi
+}
+
 # 获取最新版本
 get_latest_version() {
     info "获取最新版本..."
 
     # 尝试使用 curl
     if command -v curl >/dev/null 2>&1; then
-        VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep -o '"tag_name": *"[^"]*"' | sed 's/"tag_name": "\(.*\)"/\1/')
+        VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep -o '"tag_name": *"[^"]*"' | sed 's/"tag_name": *"\(.*\)"/\1/')
     # 尝试使用 wget
     elif command -v wget >/dev/null 2>&1; then
-        VERSION=$(wget -qO- "https://api.github.com/repos/$REPO/releases/latest" | grep -o '"tag_name": *"[^"]*"' | sed 's/"tag_name": "\(.*\)"/\1/')
+        VERSION=$(wget -qO- "https://api.github.com/repos/$REPO/releases/latest" | grep -o '"tag_name": *"[^"]*"' | sed 's/"tag_name": *"\(.*\)"/\1/')
     else
         error "需要 curl 或 wget 来下载文件"
     fi
@@ -86,6 +98,7 @@ get_latest_version() {
 get_download_url() {
     FILENAME="${BINARY_NAME}_${OS}_${ARCH}"
     DOWNLOAD_URL="https://github.com/$REPO/releases/download/$VERSION/$FILENAME"
+    CHECKSUMS_URL="https://github.com/$REPO/releases/download/$VERSION/SHA256SUMS"
     info "下载地址: $DOWNLOAD_URL"
 }
 
@@ -95,14 +108,8 @@ download_binary() {
 
     TMP_FILE=$(mktemp)
 
-    if command -v curl >/dev/null 2>&1; then
-        if ! curl -fsSL -o "$TMP_FILE" "$DOWNLOAD_URL"; then
-            error "下载失败"
-        fi
-    elif command -v wget >/dev/null 2>&1; then
-        if ! wget -qO "$TMP_FILE" "$DOWNLOAD_URL"; then
-            error "下载失败"
-        fi
+    if ! fetch "$DOWNLOAD_URL" "$TMP_FILE"; then
+        error "下载失败"
     fi
 
     info "下载完成"
@@ -115,11 +122,52 @@ verify_binary() {
     fi
 
     FILE_SIZE=$(stat -f%z "$TMP_FILE" 2>/dev/null || stat -c%s "$TMP_FILE" 2>/dev/null)
+    if [ -z "$FILE_SIZE" ]; then
+        error "无法读取下载文件大小"
+    fi
     if [ "$FILE_SIZE" -lt 1000000 ]; then
         error "下载的文件太小，可能下载失败"
     fi
 
-    info "文件大小: $(echo "scale=2; $FILE_SIZE/1024/1024" | bc 2>/dev/null || echo "$FILE_SIZE bytes") MB"
+    if command -v bc >/dev/null 2>&1; then
+        info "文件大小: $(echo "scale=2; $FILE_SIZE/1024/1024" | bc) MB"
+    else
+        info "文件大小: $FILE_SIZE bytes"
+    fi
+
+    verify_checksum
+}
+
+# 校验 SHA256（发布工作流会随版本发布 SHA256SUMS）
+verify_checksum() {
+    TMP_SUMS=$(mktemp)
+    if ! fetch "$CHECKSUMS_URL" "$TMP_SUMS" 2>/dev/null; then
+        warn "无法下载 SHA256SUMS，跳过校验"
+        rm -f "$TMP_SUMS"
+        return
+    fi
+
+    EXPECTED=$(grep " $FILENAME\$" "$TMP_SUMS" | awk '{print $1}')
+    rm -f "$TMP_SUMS"
+    if [ -z "$EXPECTED" ]; then
+        warn "SHA256SUMS 中没有 $FILENAME 的记录，跳过校验"
+        return
+    fi
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        ACTUAL=$(sha256sum "$TMP_FILE" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        ACTUAL=$(shasum -a 256 "$TMP_FILE" | awk '{print $1}')
+    else
+        warn "未找到 sha256sum/shasum，跳过校验"
+        return
+    fi
+
+    if [ "$ACTUAL" != "$EXPECTED" ]; then
+        rm -f "$TMP_FILE"
+        error "SHA256 校验失败：文件可能损坏或被篡改"
+    fi
+    info "SHA256 校验通过"
 }
 
 # 安装二进制文件
@@ -138,13 +186,12 @@ install_binary() {
         fi
     fi
 
-    # 赋予执行权限
-    chmod +x "$TMP_FILE"
-
-    # 移动到安装目录
-    if ! $SUDO mv "$TMP_FILE" "$INSTALL_DIR/$BINARY_NAME"; then
+    # install 会同时设置属主（sudo 下为 root）和权限，避免留下普通用户可改写的系统二进制
+    if ! $SUDO install -m 0755 "$TMP_FILE" "$INSTALL_DIR/$BINARY_NAME"; then
+        rm -f "$TMP_FILE"
         error "安装失败"
     fi
+    rm -f "$TMP_FILE"
 
     info "安装成功"
 }

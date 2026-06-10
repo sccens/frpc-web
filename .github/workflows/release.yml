@@ -138,6 +138,9 @@ jobs:
           EOF
 
       - name: Create GitHub Release
+        # workflow_dispatch 从分支触发时只构建产物，不创建 release，
+        # 避免出现以分支名命名的假版本。
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
