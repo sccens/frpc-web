@@ -1,120 +1,136 @@
 # FRPC Web
 
-FRPC Web 是一个浏览器化的 `frpc` 管理器，用来管理 frpc 版本、服务器配置、代理规则、进程、日志、统计和配置备份。项目当前定位是 Linux first、单管理员、本机或内网部署优先。
+浏览器化的 `frpc` 管理器：管理 frpc 版本、服务端配置、代理规则、进程、日志与流量统计，通过生成 `frpc.toml` 并热重载来应用配置。
 
-支持 TCP、UDP、HTTP、HTTPS、STCP、XTCP 代理规则；默认通过生成 `frpc.toml` 和热重载来应用配置。
+**功能一览**
 
-## 快速启动
+- frpc 版本管理（在线/离线安装、多版本切换）
+- 服务器与代理规则管理（TCP / UDP / HTTP / HTTPS / STCP / XTCP）
+- 实时日志、连接拓扑图、流量监控看板
+- 配置导入导出、审计日志、进程自动重启
+- 单管理员访问控制（Access Key + 会话 Cookie）、黑暗模式
+
+**限制**：不内置 HTTPS（建议放反向代理后）；单管理员，无多用户/RBAC；不支持 Windows。
+
+## 快速开始
+
+### 一键安装（Linux / macOS）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sccens/frpc-web/main/install.sh | bash
+frpc-web
+```
+
+### 手动安装
+
+从 [Releases](https://github.com/sccens/frpc-web/releases) 下载对应平台的二进制（Linux amd64/arm64、macOS Intel/Apple Silicon）：
+
+```bash
+chmod +x frpc-web_*
+sudo mv frpc-web_* /usr/local/bin/frpc-web
+frpc-web
+```
+
+### Docker Compose（本地构建镜像）
 
 ```bash
 git clone https://github.com/sccens/frpc-web.git
 cd frpc-web
-cd web && npm ci && npm run build
-cd ..
-go run ./cmd/frpc-web
+docker compose up -d
 ```
 
-打开 `http://127.0.0.1:8080`。如果没有设置 `FRPC_WEB_ACCESS_KEY`，首次打开会进入初始化页面。
+启动后访问 `http://127.0.0.1:8080`，首次访问会进入初始化页面设置访问密钥（Access Key），之后即可登录管理。
 
 ## 配置
+
+全部通过环境变量：
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `FRPC_WEB_ADDR` | `127.0.0.1:8080` | Web 监听地址 |
-| `FRPC_WEB_DATA_DIR` | `frpc-web-data` | SQLite、frpc 二进制、配置和日志目录 |
+| `FRPC_WEB_DATA_DIR` | `frpc-web-data` | 状态文件、frpc 二进制、配置和日志目录 |
 | `FRPC_WEB_ACCESS_KEY` | 空 | 单管理员访问密钥 |
 | `FRPC_WEB_GITHUB_PROXY` | 空 | 默认 GitHub 下载代理 |
-| `FRPC_WEB_JWT_SECRET` | 自动生成 | JWT 签名密钥 |
-| `FRPC_WEB_WEB_DIR` | 空 | 指定外部前端静态目录，通常只用于开发排障 |
 | `FRPC_WEB_TRUSTED_PROXY` | 空 | 信任代理转发的客户端 IP：`1/true/yes/on` |
+| `FRPC_WEB_WEB_DIR` | 空 | 外部前端静态目录，仅开发排障用 |
 
-生产建议：
+生产环境建议：
 
 ```bash
-FRPC_WEB_ADDR=127.0.0.1:8080
-FRPC_WEB_DATA_DIR=/opt/frpc-web/data
-FRPC_WEB_ACCESS_KEY=change-me-to-a-long-random-key
-FRPC_WEB_GITHUB_PROXY=
-FRPC_WEB_JWT_SECRET=
-FRPC_WEB_TRUSTED_PROXY=
+export FRPC_WEB_ADDR=127.0.0.1:8080
+export FRPC_WEB_DATA_DIR=/opt/frpc-web/data
+export FRPC_WEB_ACCESS_KEY=change-me-to-a-long-random-key
 ```
 
-需要让同一网络内的设备访问时，把监听地址改成 `0.0.0.0:8080`。公网暴露时建议放在 HTTPS 反向代理或隧道后面。
+## 部署
 
-## systemd 部署
-
-目标机需要 Go、Node.js、npm 和 make。
+### systemd（Linux）
 
 ```bash
+# 下载预编译二进制（安装到 /usr/local/bin）
+curl -fsSL https://raw.githubusercontent.com/sccens/frpc-web/main/install.sh | bash
+
+# 获取仓库（安装脚本和 systemd 服务文件在仓库内）
 git clone https://github.com/sccens/frpc-web.git
 cd frpc-web
-cd web && npm ci
-cd ..
-make build
-sudo scripts/install-linux.sh
-```
+sudo SOURCE_BIN=/usr/local/bin/frpc-web ./scripts/install-linux.sh
 
-安装脚本只复制已构建的二进制、创建 `frpc-web` 低权限用户、安装 systemd unit，并启用服务；不会拉取源码、安装构建工具或自动启动服务。
-
-```bash
-sudo nano /opt/frpc-web/frpc-web.env
+# 按需编辑 /opt/frpc-web/frpc-web.env，然后启动
 sudo systemctl start frpc-web
-sudo systemctl status frpc-web
 ```
 
-保持 `127.0.0.1:8080` 时，远程访问可使用 SSH 隧道：
+查看日志：`journalctl -u frpc-web -f`。更新版本：重跑 install.sh 后 `sudo systemctl restart frpc-web`。卸载：`sudo /opt/frpc-web/scripts/uninstall-linux.sh`（加 `--purge-data` 同时删除数据）。
+
+### Docker 模式说明
+
+frpc-web 会把 frpc **下载到容器内**并作为自己的子进程运行（持久化在 `/data` 卷，容器重启后自动拉起 `autoStart` 的服务器），不需要也不会管理宿主机上的 frpc：
+
+- 穿透**宿主机**服务时，规则的 `localIP` 填 `host.docker.internal`（compose 已配置 host-gateway）；`127.0.0.1` 指容器自身。
+- STCP/XTCP **visitor** 规则在容器内监听 `bindPort`，宿主机要访问需把 `bindAddr` 设为 `0.0.0.0` 并在 compose 中追加端口映射（或 Linux 下改用 `network_mode: host`）。
+- 默认只绑定 `127.0.0.1:8080`，建议在 compose 的 `environment` 中设置 `FRPC_WEB_ACCESS_KEY`。
+
+### 远程访问
+
+- **SSH 隧道（推荐）**：`ssh -L 8080:127.0.0.1:8080 user@your-server`，本地访问 `http://localhost:8080`。
+- **局域网**：`export FRPC_WEB_ADDR=0.0.0.0:8080`（务必设置 Access Key）。
+- **公网**：放在 HTTPS 反向代理后，并设置 `FRPC_WEB_TRUSTED_PROXY=1` 信任转发头：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name frpc.example.com;
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+## 开发
+
+要求 Go 1.26+、Node.js 20.19+（或 22+）。
 
 ```bash
-ssh -L 8080:127.0.0.1:8080 user@your-server
-```
+# 构建（前端 + 后端单二进制）
+cd web && npm ci && npm run build && cd ..
+make build && ./bin/frpc-web
 
-常用命令：
+# 开发模式：两个终端
+go run ./cmd/frpc-web      # 后端
+cd web && npm run dev      # 前端，自动代理 /api 到后端
 
-```bash
-journalctl -u frpc-web -f
-git pull && make build
-sudo scripts/install-linux.sh
-sudo systemctl restart frpc-web
-sudo /opt/frpc-web/scripts/uninstall-linux.sh
-sudo /opt/frpc-web/scripts/uninstall-linux.sh --purge-data
-```
-
-## Docker 部署
-
-```bash
-git clone https://github.com/sccens/frpc-web.git
-cd frpc-web
-docker compose up -d --build
-```
-
-默认 Compose 只绑定宿主机本地地址：
-
-```yaml
-ports:
-  - "127.0.0.1:8080:8080"
-```
-
-建议在 `docker-compose.yml` 中设置：
-
-```yaml
-environment:
-  FRPC_WEB_ACCESS_KEY: "change-me-to-a-long-random-key"
-```
-
-Docker 中的 `127.0.0.1` 是容器自身。frpc 规则需要访问宿主机服务时，`localIP` 建议填 `host.docker.internal`。
-
-## 开发检查
-
-```bash
+# 测试与发布
 go test ./...
-cd web && npm run build
-make build
+make test
 make release
 ```
 
-## 限制
+## 许可证
 
-- 不内置 HTTPS
-- 不支持多用户、RBAC 和服务器级授权
-- 暂不支持 Windows
-- Store API 模式仍是实验入口，默认建议使用 `toml_reload`
+MIT。基于 [fatedier/frp](https://github.com/fatedier/frp) 与 [Element Plus](https://element-plus.org/) 构建，欢迎提交 [Issue](https://github.com/sccens/frpc-web/issues) 和 Pull Request。

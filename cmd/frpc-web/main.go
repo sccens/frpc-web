@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,7 +18,14 @@ import (
 	webui "github.com/sccens/frpc-web/web"
 )
 
+var Version = "dev"
+
 func main() {
+	if isVersionCommand(os.Args[1:]) {
+		fmt.Printf("frpc-web %s\n", Version)
+		return
+	}
+
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
@@ -91,6 +99,18 @@ func isPublicBind(addr string) bool {
 func truthy(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func isVersionCommand(args []string) bool {
+	if len(args) != 1 {
+		return false
+	}
+	switch args[0] {
+	case "--version", "-version", "version":
 		return true
 	default:
 		return false

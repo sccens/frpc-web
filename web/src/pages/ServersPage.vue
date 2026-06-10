@@ -1,16 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { FlaskConical, Pencil, Plus, Search, SlidersHorizontal, Trash2, X } from 'lucide-vue-next'
+import { Pencil, Plus, Search, SlidersHorizontal, Trash2, X } from 'lucide-vue-next'
 import {
   checkServer,
   createRule,
   createServer,
   deleteRule,
   deleteServer,
-  getMe,
   getServers,
   reloadServer,
+  restartServer,
   startServer,
   stopServer,
   updateRule,
@@ -19,14 +18,15 @@ import {
   type ProxyRuleInput,
   type Server,
   type ServerInput,
-  type User,
 } from '../api/client'
+import { errorMessage } from '../utils/errors'
 import ServerTable from '../components/ServerTable.vue'
 
-type RuleRow = ProxyRule & { serverName: string }
+// nodeName 是规则所属节点的名称；不要占用 serverName——
+// 那是 STCP/XTCP visitor 规则自身的字段（要访问的目标服务名）。
+type RuleRow = ProxyRule & { nodeName: string }
 
 interface RuleForm extends ProxyRuleInput {
-  id: string
   serverId: string
   customDomainsText: string
   locationsText: string
@@ -41,24 +41,20 @@ const serverDrawerOpen = ref(false)
 const ruleDrawerOpen = ref(false)
 const editingServerId = ref('')
 const editingRuleId = ref('')
-const currentUser = ref<User | null>(null)
-const showExperimentalConfigMode = ref(false)
 
 const serverForm = ref<ServerInput>(defaultServerForm())
 const ruleForm = ref<RuleForm>(defaultRuleForm())
-const canOperate = computed(() => Boolean(currentUser.value?.enabled))
 const isTCPUDP = computed(() => ruleForm.value.type === 'tcp' || ruleForm.value.type === 'udp')
 const isHTTP = computed(() => ruleForm.value.type === 'http' || ruleForm.value.type === 'https')
 const isSecretRule = computed(() => ruleForm.value.type === 'stcp' || ruleForm.value.type === 'xtcp')
 const isVisitorRule = computed(() => isSecretRule.value && ruleForm.value.role === 'visitor')
-const showStoreModeOption = computed(() => showExperimentalConfigMode.value || serverForm.value.configMode === 'store_api')
 
 const allRules = computed<RuleRow[]>(() => {
   const keyword = search.value.trim().toLowerCase()
   const rows = servers.value.flatMap((server) =>
     (server.rules ?? []).map((rule) => ({
       ...rule,
-      serverName: server.name,
+      nodeName: server.name,
     })),
   )
   if (!keyword) return rows
@@ -66,7 +62,7 @@ const allRules = computed<RuleRow[]>(() => {
     [
       rule.name,
       rule.type,
-      rule.serverName,
+      rule.nodeName,
       `${rule.localIp}:${rule.localPort}`,
       `${rule.remotePort ?? ''}`,
       rule.serverName ?? '',
@@ -90,16 +86,8 @@ async function loadServers() {
 }
 
 onMounted(() => {
-  void Promise.all([loadServers(), loadUser()])
+  void loadServers()
 })
-
-async function loadUser() {
-  try {
-    currentUser.value = await getMe()
-  } catch {
-    currentUser.value = null
-  }
-}
 
 function defaultServerForm(): ServerInput {
   return {
@@ -108,20 +96,17 @@ function defaultServerForm(): ServerInput {
     serverPort: 7000,
     authToken: '',
     transportProtocol: 'tcp',
-    configMode: 'toml_reload',
     autoStart: false,
     autoRestart: true,
     maxRestarts: 3,
     adminPort: 0,
     adminUser: '',
     adminPassword: '',
-    frpcVersionId: '',
   }
 }
 
 function defaultRuleForm(): RuleForm {
   return {
-    id: '',
     serverId: servers.value[0]?.id ?? '',
     name: '',
     type: 'tcp',
@@ -150,15 +135,12 @@ function defaultRuleForm(): RuleForm {
 }
 
 function openCreateServer() {
-  if (!canOperate.value) return
   editingServerId.value = ''
   serverForm.value = defaultServerForm()
-  showExperimentalConfigMode.value = false
   serverDrawerOpen.value = true
 }
 
 function openEditServer(server: Server) {
-  if (!canOperate.value) return
   editingServerId.value = server.id
   serverForm.value = {
     name: server.name,
@@ -166,21 +148,17 @@ function openEditServer(server: Server) {
     serverPort: server.serverPort,
     authToken: '',
     transportProtocol: server.transportProtocol || 'tcp',
-    configMode: server.configMode || 'toml_reload',
     autoStart: server.autoStart,
     autoRestart: server.autoRestart,
     maxRestarts: server.maxRestarts || 3,
     adminPort: server.adminPort,
     adminUser: server.adminUser || '',
     adminPassword: '',
-    frpcVersionId: server.frpcVersionId || '',
   }
-  showExperimentalConfigMode.value = server.configMode === 'store_api'
   serverDrawerOpen.value = true
 }
 
 async function saveServer() {
-  if (!canOperate.value) return
   saving.value = true
   try {
     if (editingServerId.value) {
@@ -200,7 +178,6 @@ async function saveServer() {
 }
 
 async function removeServer() {
-  if (!canOperate.value) return
   if (!editingServerId.value) return
   await ElMessageBox.confirm('删除该服务器会同时删除其代理规则。', '删除服务器', {
     type: 'warning',
@@ -221,7 +198,6 @@ async function removeServer() {
 }
 
 function openCreateRule() {
-  if (!canOperate.value) return
   if (servers.value.length === 0) {
     ElMessage.warning('请先添加服务器节点')
     return
@@ -232,10 +208,8 @@ function openCreateRule() {
 }
 
 function openEditRule(rule: RuleRow) {
-  if (!canOperate.value) return
   editingRuleId.value = rule.id
   ruleForm.value = {
-    id: rule.id,
     serverId: rule.serverId,
     name: rule.name,
     type: rule.type,
@@ -265,7 +239,6 @@ function openEditRule(rule: RuleRow) {
 }
 
 async function saveRule() {
-  if (!canOperate.value) return
   const input = ruleInput()
   saving.value = true
   try {
@@ -286,7 +259,6 @@ async function saveRule() {
 }
 
 async function removeRule(rule: RuleRow) {
-  if (!canOperate.value) return
   await ElMessageBox.confirm(`删除规则 ${rule.name}？`, '删除代理规则', {
     type: 'warning',
     confirmButtonText: '删除',
@@ -301,8 +273,7 @@ async function removeRule(rule: RuleRow) {
   }
 }
 
-async function runServerAction(server: Server, action: 'start' | 'stop' | 'reload' | 'check') {
-  if (!canOperate.value) return
+async function runServerAction(server: Server, action: 'start' | 'stop' | 'restart' | 'reload' | 'check') {
   loading.value = true
   try {
     const result =
@@ -310,9 +281,11 @@ async function runServerAction(server: Server, action: 'start' | 'stop' | 'reloa
         ? await startServer(server.id)
         : action === 'stop'
           ? await stopServer(server.id)
-          : action === 'reload'
-            ? await reloadServer(server.id)
-            : await checkServer(server.id)
+          : action === 'restart'
+            ? await restartServer(server.id)
+            : action === 'reload'
+              ? await reloadServer(server.id)
+              : await checkServer(server.id)
     ElMessage.success(result.message)
     await loadServers()
   } catch (err) {
@@ -378,25 +351,17 @@ function localTarget(rule: ProxyRule) {
   }
   return `${rule.localIp}:${rule.localPort}`
 }
-
-function errorMessage(err: unknown) {
-  if (typeof err === 'object' && err !== null && 'response' in err) {
-    const response = (err as { response?: { data?: { error?: string; message?: string } } }).response
-    return response?.data?.error || response?.data?.message || '操作失败'
-  }
-  return err instanceof Error ? err.message : '操作失败'
-}
 </script>
 
 <template>
   <div class="page-stack animate-enter" v-loading="loading">
     <ServerTable
       :servers="servers"
-      :can-operate="canOperate"
       @add="openCreateServer"
       @edit="openEditServer"
       @start="(server) => runServerAction(server, 'start')"
       @stop="(server) => runServerAction(server, 'stop')"
+      @restart="(server) => runServerAction(server, 'restart')"
       @reload="(server) => runServerAction(server, 'reload')"
       @check="(server) => runServerAction(server, 'check')"
     />
@@ -408,7 +373,7 @@ function errorMessage(err: unknown) {
           <h2>代理规则</h2>
           <span>TCP、UDP、HTTP、HTTPS 四类代理规则</span>
         </div>
-        <button v-if="canOperate" class="primary-action" type="button" @click="openCreateRule">
+        <button class="primary-action" type="button" @click="openCreateRule">
           <Plus :size="15" :stroke-width="1.8" />
           新增规则
         </button>
@@ -431,7 +396,7 @@ function errorMessage(err: unknown) {
               <th>所属节点</th>
               <th>内网服务源</th>
               <th>公网映射入口</th>
-              <th v-if="canOperate">管理</th>
+              <th>管理</th>
             </tr>
           </thead>
           <tbody>
@@ -445,14 +410,14 @@ function errorMessage(err: unknown) {
               <td>
                 <span class="protocol-pill">{{ rule.type.toUpperCase() }}</span>
               </td>
-              <td>{{ rule.serverName }}</td>
+              <td>{{ rule.nodeName }}</td>
               <td>
                 <code>{{ localTarget(rule) }}</code>
               </td>
               <td>
                 <code>{{ remoteTarget(rule) }}</code>
               </td>
-              <td v-if="canOperate">
+              <td>
                 <div class="row-actions">
                   <button class="icon-button ghost" type="button" aria-label="编辑" @click="openEditRule(rule)">
                     <Pencil :size="15" :stroke-width="1.8" />
@@ -512,29 +477,6 @@ function errorMessage(err: unknown) {
                     <option value="websocket">WebSocket</option>
                   </select>
                 </label>
-                <label>
-                  <span>配置模式</span>
-                  <select v-model="serverForm.configMode">
-                    <option value="toml_reload">TOML Reload</option>
-                    <option v-if="showStoreModeOption" value="store_api">Store API · 实验</option>
-                  </select>
-                </label>
-              </div>
-              <button
-                v-if="!showStoreModeOption"
-                class="ghost-action strong inline-action"
-                type="button"
-                @click="showExperimentalConfigMode = true"
-              >
-                <FlaskConical :size="15" :stroke-width="1.8" />
-                显示实验配置模式
-              </button>
-              <div v-if="serverForm.configMode === 'store_api'" class="security-band compact">
-                <FlaskConical :size="17" :stroke-width="1.8" />
-                <div>
-                  <strong>Store API 为实验功能</strong>
-                  <p>依赖 frpc Admin Store API，STCP/XTCP 不支持此模式；个人单机默认建议使用 TOML Reload。</p>
-                </div>
               </div>
               <div class="form-grid">
                 <label>
@@ -554,8 +496,8 @@ function errorMessage(err: unknown) {
                 <label>
                   <span>自动启动</span>
                   <select v-model="serverForm.autoStart">
-                    <option :value="true">Enabled</option>
-                    <option :value="false">Disabled</option>
+                    <option :value="true">已启用</option>
+                    <option :value="false">已禁用</option>
                   </select>
                 </label>
               </div>
@@ -563,8 +505,8 @@ function errorMessage(err: unknown) {
                 <label>
                   <span>崩溃自愈</span>
                   <select v-model="serverForm.autoRestart">
-                    <option :value="true">Enabled</option>
-                    <option :value="false">Disabled</option>
+                    <option :value="true">已启用</option>
+                    <option :value="false">已禁用</option>
                   </select>
                 </label>
                 <label>
@@ -682,10 +624,10 @@ function errorMessage(err: unknown) {
               <div class="route-node remote">
                 <p class="overline">State</p>
                 <label>
-                  <span>Enabled</span>
+                  <span>已启用</span>
                   <select v-model="ruleForm.enabled">
-                    <option :value="true">Enabled</option>
-                    <option :value="false">Disabled</option>
+                    <option :value="true">已启用</option>
+                    <option :value="false">已禁用</option>
                   </select>
                 </label>
               </div>
@@ -701,15 +643,15 @@ function errorMessage(err: unknown) {
                   <label>
                     <span>加密传输</span>
                     <select v-model="ruleForm.useEncryption">
-                      <option :value="false">Disabled</option>
-                      <option :value="true">Enabled</option>
+                      <option :value="false">已禁用</option>
+                      <option :value="true">已启用</option>
                     </select>
                   </label>
                   <label>
                     <span>压缩传输</span>
                     <select v-model="ruleForm.useCompression">
-                      <option :value="false">Disabled</option>
-                      <option :value="true">Enabled</option>
+                      <option :value="false">已禁用</option>
+                      <option :value="true">已启用</option>
                     </select>
                   </label>
                 </div>

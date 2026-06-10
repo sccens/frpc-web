@@ -1,18 +1,16 @@
 package app_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
-	"strings"
 	"testing"
 
 	"github.com/sccens/frpc-web/internal/app"
 	"github.com/sccens/frpc-web/internal/storage"
 )
 
-func TestServiceAccessKeySessionsSettingsAndProxyPriority(t *testing.T) {
+func TestServiceAccessKeySettingsAndProxyPriority(t *testing.T) {
 	ctx := context.Background()
 	store, err := storage.Open(ctx, t.TempDir())
 	if err != nil {
@@ -44,10 +42,10 @@ func TestServiceAccessKeySessionsSettingsAndProxyPriority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	if session.User.Username != "owner" || session.User.Role != "admin" || session.Session.Token == "" {
+	if session.Token == "" {
 		t.Fatalf("unexpected bootstrap session: %#v", session)
 	}
-	if _, _, err := svc.VerifySession(ctx, session.Session.Token); err != nil {
+	if _, err := svc.VerifySession(ctx, session.Token); err != nil {
 		t.Fatalf("verify session: %v", err)
 	}
 	if _, err := svc.Bootstrap(ctx, app.AuthInput{AccessKey: "password123"}, meta); !errors.Is(err, app.ErrAlreadyBootstrapped) {
@@ -60,30 +58,16 @@ func TestServiceAccessKeySessionsSettingsAndProxyPriority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	if login.User.ID != "owner" || login.User.Role != "admin" {
-		t.Fatalf("unexpected login user: %#v", login.User)
-	}
-	sessions, err := svc.Sessions(ctx, login.Session.Token)
-	if err != nil {
-		t.Fatalf("sessions: %v", err)
-	}
-	if len(sessions) != 2 {
-		t.Fatalf("sessions len = %d, want 2", len(sessions))
+	if login.Token == "" {
+		t.Fatalf("unexpected login session: %#v", login)
 	}
 
-	settings, err := svc.UpdateSettings(ctx, app.SettingsInput{
-		GithubProxy:        " https://proxy.example/ ",
-		LogAutoRefresh:     true,
-		LogRefreshInterval: 10,
-	})
+	settings, err := svc.UpdateSettings(ctx, app.SettingsInput{GithubProxy: " https://proxy.example/ "})
 	if err != nil {
 		t.Fatalf("update settings: %v", err)
 	}
-	if settings.GithubProxy != "https://proxy.example/" || !settings.LogAutoRefresh || settings.LogRefreshInterval != 10 {
+	if settings.GithubProxy != "https://proxy.example/" {
 		t.Fatalf("unexpected settings: %#v", settings)
-	}
-	if _, err := svc.UpdateSettings(ctx, app.SettingsInput{LogRefreshInterval: 1}); !errors.Is(err, app.ErrInvalidInput) {
-		t.Fatalf("invalid interval error = %v, want invalid input", err)
 	}
 
 	if _, err := svc.CheckLatest(ctx, app.LatestVersionInput{}); err != nil {
@@ -108,7 +92,7 @@ func TestServiceAccessKeySessionsSettingsAndProxyPriority(t *testing.T) {
 	if err := svc.ChangeAccessKey(ctx, app.AccessKeyInput{CurrentAccessKey: "password123", NewAccessKey: "new-password123"}); err != nil {
 		t.Fatalf("change access key: %v", err)
 	}
-	if _, _, err := svc.VerifySession(ctx, login.Session.Token); !errors.Is(err, app.ErrUnauthorized) {
+	if _, err := svc.VerifySession(ctx, login.Token); !errors.Is(err, app.ErrUnauthorized) {
 		t.Fatalf("old session verify error = %v, want unauthorized", err)
 	}
 	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "password123"}, meta); !errors.Is(err, app.ErrInvalidCredentials) {
@@ -145,29 +129,6 @@ func TestServiceEnvAccessKeyPriority(t *testing.T) {
 	}
 	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "env-secret-123"}, meta); err != nil {
 		t.Fatalf("env key login: %v", err)
-	}
-}
-
-func TestJWTSecretPersistsWhenEnvMissing(t *testing.T) {
-	t.Setenv("FRPC_WEB_JWT_SECRET", "")
-	ctx := context.Background()
-	store, err := storage.Open(ctx, t.TempDir())
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer store.Close()
-	svc := app.NewService(app.Options{Store: store, Runtime: &fakeRuntime{}, Addr: "127.0.0.1:8080"})
-
-	first, err := svc.JWTSecret(ctx)
-	if err != nil {
-		t.Fatalf("jwt secret first: %v", err)
-	}
-	second, err := svc.JWTSecret(ctx)
-	if err != nil {
-		t.Fatalf("jwt secret second: %v", err)
-	}
-	if !bytes.Equal(first, second) || len(first) < 32 {
-		t.Fatalf("secret should persist, got %q then %q", first, second)
 	}
 }
 
@@ -216,8 +177,7 @@ func TestServiceStatsAndAudit(t *testing.T) {
 	}
 
 	svc.AddAudit(ctx, app.AuditLogInput{
-		Username:     "owner",
-		Role:         "admin",
+		IP:           "127.0.0.1",
 		Action:       "auth.login",
 		ResourceType: "session",
 		Result:       "success",
@@ -226,7 +186,7 @@ func TestServiceStatsAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("audit logs: %v", err)
 	}
-	if logs.Total != 1 || len(logs.Items) != 1 || logs.Items[0].Username != "owner" {
+	if logs.Total != 1 || len(logs.Items) != 1 || logs.Items[0].Action != "auth.login" {
 		t.Fatalf("unexpected audit logs: %#v", logs)
 	}
 }
@@ -263,23 +223,12 @@ func TestServiceConfigExportImport(t *testing.T) {
 		t.Fatalf("create stcp rule: %v", err)
 	}
 
-	masked, err := svc.ExportConfig(ctx, false)
-	if err != nil {
-		t.Fatalf("export masked: %v", err)
-	}
-	if len(masked.Servers) != 1 || !strings.Contains(masked.Servers[0].Server.AuthToken, "*") {
-		t.Fatalf("expected masked server token: %#v", masked.Servers)
-	}
-	if !strings.Contains(masked.Servers[0].Rules[0].SecretKey, "*") {
-		t.Fatalf("expected masked rule secret: %#v", masked.Servers[0].Rules[0])
-	}
-
-	full, err := svc.ExportConfig(ctx, true)
+	full, err := svc.ExportConfig(ctx)
 	if err != nil {
 		t.Fatalf("export full: %v", err)
 	}
-	if full.Servers[0].Server.AuthToken != "server-token" || full.Servers[0].Rules[0].SecretKey != "stcp-secret" {
-		t.Fatalf("expected full secrets: %#v", full.Servers[0])
+	if len(full.Servers) != 1 || full.Servers[0].Server.AuthToken != "server-token" || full.Servers[0].Rules[0].SecretKey != "stcp-secret" {
+		t.Fatalf("expected full secrets in export: %#v", full.Servers)
 	}
 
 	targetStore, err := storage.Open(ctx, t.TempDir())
@@ -336,6 +285,21 @@ func TestServiceRejectsInvalidRequestHeader(t *testing.T) {
 		RequestHeaders: []string{"X-Forwarded-Proto: https"},
 	}); err != nil {
 		t.Fatalf("CreateRule with valid header: %v", err)
+	}
+}
+
+func TestIsValidHeaderName(t *testing.T) {
+	cases := map[string]bool{
+		"X-Forwarded-For": true,
+		"X_Custom_1":      true,
+		"":                false,
+		"has space":       false,
+		"bad:colon":       false,
+	}
+	for name, want := range cases {
+		if got := app.IsValidHeaderName(name); got != want {
+			t.Fatalf("IsValidHeaderName(%q) = %v, want %v", name, got, want)
+		}
 	}
 }
 

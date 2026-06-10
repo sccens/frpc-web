@@ -1,28 +1,63 @@
+// Package storage 以单个 JSON 状态文件持久化全部数据。
+// 个人单机场景下数据量极小（个位数服务器、几十条规则），
+// 内存持有 + 原子写回比嵌入式数据库更简单：文件人类可读、
+// 天然可备份、无迁移负担。
 package storage
 
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sccens/frpc-web/internal/app"
-	_ "modernc.org/sqlite"
 )
 
-type Store struct {
-	db      *sql.DB
-	dataDir string
+const (
+	stateFileName   = "state.json"
+	maxAuditEntries = 500
+	maxHealthEvents = 200
+	healthRetention = 30 * 24 * time.Hour
+)
+
+// storedSession 是 app.Session 的持久化形态：只存凭证哈希，永不存明文 token。
+type storedSession struct {
+	ID           string `json:"id"`
+	IDHash       string `json:"idHash"`
+	IP           string `json:"ip"`
+	UserAgent    string `json:"userAgent"`
+	CreatedAt    string `json:"createdAt"`
+	LastAccessAt string `json:"lastAccessAt"`
+	ExpiresAt    string `json:"expiresAt"`
 }
 
-func Open(ctx context.Context, dataDir string) (*Store, error) {
+type state struct {
+	Settings  map[string]string          `json:"settings"`
+	Servers   []app.Server               `json:"servers"`
+	Versions  []app.FRPCVersion          `json:"versions"`
+	Processes map[string]app.ProcessInfo `json:"processes"`
+	Sessions  []storedSession            `json:"sessions"`
+	Health    []app.HealthEvent          `json:"health"`
+	Audit     []app.AuditLog             `json:"audit"`
+}
+
+type Store struct {
+	mu      sync.Mutex
+	dataDir string
+	path    string
+	st      state
+}
+
+func Open(_ context.Context, dataDir string) (*Store, error) {
 	if dataDir == "" {
 		dataDir = "frpc-web-data"
 	}
@@ -33,237 +68,121 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		return nil, err
 	}
 
-	dbPath := filepath.Join(dataDir, "app.db")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, err
+	store := &Store{
+		dataDir: dataDir,
+		path:    filepath.Join(dataDir, stateFileName),
+		st: state{
+			Settings:  map[string]string{},
+			Processes: map[string]app.ProcessInfo{},
+		},
 	}
-	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;`); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := os.Chmod(dbPath, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
-		_ = db.Close()
+
+	data, err := os.ReadFile(store.path)
+	switch {
+	case err == nil:
+		if err := json.Unmarshal(data, &store.st); err != nil {
+			return nil, fmt.Errorf("parse %s failed: %w", store.path, err)
+		}
+		if store.st.Settings == nil {
+			store.st.Settings = map[string]string{}
+		}
+		if store.st.Processes == nil {
+			store.st.Processes = map[string]app.ProcessInfo{}
+		}
+	case errors.Is(err, os.ErrNotExist):
+		if _, dbErr := os.Stat(filepath.Join(dataDir, "app.db")); dbErr == nil {
+			slog.Warn("检测到旧版 SQLite 数据库 app.db；本版本已改用 state.json 存储。" +
+				"请在旧版本中导出配置（设置 → 配置备份），再到本版本导入；app.db 不会被修改。")
+		}
+	default:
 		return nil, err
 	}
 
-	store := &Store{db: db, dataDir: dataDir}
-	if err := store.migrate(ctx); err != nil {
-		_ = db.Close()
+	store.pruneExpired()
+	if err := store.save(); err != nil {
 		return nil, err
 	}
 	return store, nil
 }
 
 func (s *Store) Close() error {
-	return s.db.Close()
+	return nil
 }
 
 func (s *Store) DataDir() string {
 	return s.dataDir
 }
 
-func (s *Store) migrate(ctx context.Context) error {
-	statements := []string{
-		`CREATE TABLE IF NOT EXISTS servers (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL,
-			server_addr TEXT NOT NULL,
-			server_port INTEGER NOT NULL,
-			auth_token TEXT NOT NULL DEFAULT '',
-			transport_protocol TEXT NOT NULL DEFAULT 'tcp',
-			config_mode TEXT NOT NULL DEFAULT 'toml_reload',
-			auto_start INTEGER NOT NULL DEFAULT 0,
-			status TEXT NOT NULL DEFAULT 'stopped',
-			admin_addr TEXT NOT NULL DEFAULT '127.0.0.1',
-			admin_port INTEGER NOT NULL,
-			frpc_version_id TEXT NOT NULL DEFAULT '',
-			restart_required INTEGER NOT NULL DEFAULT 0,
-			last_reload_at TEXT NOT NULL DEFAULT '',
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		);`,
-		`CREATE TABLE IF NOT EXISTS proxy_rules (
-			id TEXT PRIMARY KEY,
-			server_id TEXT NOT NULL,
-			name TEXT NOT NULL,
-			type TEXT NOT NULL,
-			local_ip TEXT NOT NULL,
-			local_port INTEGER NOT NULL,
-			remote_port INTEGER NOT NULL DEFAULT 0,
-			custom_domains TEXT NOT NULL DEFAULT '[]',
-			enabled INTEGER NOT NULL DEFAULT 1,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE,
-			UNIQUE(server_id, name)
-		);`,
-		`CREATE TABLE IF NOT EXISTS frpc_versions (
-			id TEXT PRIMARY KEY,
-			version TEXT NOT NULL,
-			platform TEXT NOT NULL,
-			arch TEXT NOT NULL,
-			binary_path TEXT NOT NULL,
-			source TEXT NOT NULL,
-			active INTEGER NOT NULL DEFAULT 0,
-			created_at TEXT NOT NULL,
-			UNIQUE(version, platform, arch)
-		);`,
-		`CREATE TABLE IF NOT EXISTS process_instances (
-			server_id TEXT PRIMARY KEY,
-			pid INTEGER NOT NULL,
-			frpc_version TEXT NOT NULL,
-			config_path TEXT NOT NULL,
-			log_path TEXT NOT NULL,
-			started_at TEXT NOT NULL,
-			stopped_at TEXT NOT NULL DEFAULT '',
-			exit_code INTEGER NOT NULL DEFAULT 0,
-			FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
-		);`,
-		`CREATE TABLE IF NOT EXISTS config_versions (
-			id TEXT PRIMARY KEY,
-			server_id TEXT NOT NULL,
-			version_no INTEGER NOT NULL,
-			toml_snapshot TEXT NOT NULL,
-			change_summary TEXT NOT NULL,
-			checksum TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			applied_at TEXT NOT NULL DEFAULT '',
-			apply_result TEXT NOT NULL DEFAULT 'pending',
-			FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
-		);`,
-		`CREATE TABLE IF NOT EXISTS health_events (
-			id TEXT PRIMARY KEY,
-			server_id TEXT NOT NULL DEFAULT '',
-			level TEXT NOT NULL,
-			status TEXT NOT NULL DEFAULT 'open',
-			message TEXT NOT NULL,
-			created_at TEXT NOT NULL
-		);`,
-		`CREATE TABLE IF NOT EXISTS app_settings (
-			key TEXT PRIMARY KEY,
-			value TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		);`,
-		`CREATE TABLE IF NOT EXISTS sessions (
-			id TEXT PRIMARY KEY,
-			id_hash TEXT NOT NULL UNIQUE,
-			ip TEXT NOT NULL DEFAULT '',
-			user_agent TEXT NOT NULL DEFAULT '',
-			created_at TEXT NOT NULL,
-			last_access_at TEXT NOT NULL,
-			expires_at TEXT NOT NULL,
-			revoked_at TEXT NOT NULL DEFAULT ''
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_sessions_id_hash ON sessions(id_hash);`,
-		`CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);`,
-		`CREATE TABLE IF NOT EXISTS audit_logs (
-			id TEXT PRIMARY KEY,
-			user_id TEXT NOT NULL DEFAULT '',
-			username TEXT NOT NULL DEFAULT '',
-			role TEXT NOT NULL DEFAULT '',
-			ip TEXT NOT NULL DEFAULT '',
-			user_agent TEXT NOT NULL DEFAULT '',
-			action TEXT NOT NULL,
-			resource_type TEXT NOT NULL DEFAULT '',
-			resource_id TEXT NOT NULL DEFAULT '',
-			result TEXT NOT NULL,
-			error TEXT NOT NULL DEFAULT '',
-			created_at TEXT NOT NULL
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);`,
-		`CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);`,
-		`CREATE INDEX IF NOT EXISTS idx_audit_logs_result ON audit_logs(result);`,
-	}
-	for _, statement := range statements {
-		if _, err := s.db.ExecContext(ctx, statement); err != nil {
-			return err
-		}
-	}
-	if err := s.ensureColumn(ctx, "servers", "auto_restart", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	if err := s.ensureColumn(ctx, "servers", "max_restarts", "INTEGER NOT NULL DEFAULT 3"); err != nil {
-		return err
-	}
-	if err := s.ensureColumn(ctx, "servers", "admin_user", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := s.ensureColumn(ctx, "servers", "admin_password", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE servers SET admin_user = 'frpc-web' WHERE admin_user = ''`); err != nil {
-		return err
-	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE servers SET admin_password = lower(hex(randomblob(16))) WHERE admin_password = ''`); err != nil {
-		return err
-	}
-	proxyColumns := []struct {
-		name string
-		ddl  string
-	}{
-		{"secret_key", "TEXT NOT NULL DEFAULT ''"},
-		{"role", "TEXT NOT NULL DEFAULT ''"},
-		{"server_name", "TEXT NOT NULL DEFAULT ''"},
-		{"bind_addr", "TEXT NOT NULL DEFAULT ''"},
-		{"bind_port", "INTEGER NOT NULL DEFAULT 0"},
-		{"use_encryption", "INTEGER NOT NULL DEFAULT 0"},
-		{"use_compression", "INTEGER NOT NULL DEFAULT 0"},
-		{"bandwidth_limit", "TEXT NOT NULL DEFAULT ''"},
-		{"locations", "TEXT NOT NULL DEFAULT '[]'"},
-		{"host_header_rewrite", "TEXT NOT NULL DEFAULT ''"},
-		{"http_user", "TEXT NOT NULL DEFAULT ''"},
-		{"http_password", "TEXT NOT NULL DEFAULT ''"},
-		{"request_headers", "TEXT NOT NULL DEFAULT '[]'"},
-	}
-	for _, column := range proxyColumns {
-		if err := s.ensureColumn(ctx, "proxy_rules", column.name, column.ddl); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Store) ensureColumn(ctx context.Context, table, column, ddl string) error {
-	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+// save 原子写回状态文件；调用方需持有 s.mu（Open 阶段除外）。
+func (s *Store) save() error {
+	data, err := json.MarshalIndent(s.st, "", "  ")
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, ctype string
-		var notnull, pk int
-		var dflt any
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			return err
-		}
-		if name == column {
-			return nil
-		}
-	}
-	if err := rows.Err(); err != nil {
+	tmp, err := os.CreateTemp(s.dataDir, stateFileName+".tmp-*")
+	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, ddl))
-	return err
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, s.path)
 }
 
-func (s *Store) GetSetting(ctx context.Context, key string) (string, error) {
-	var value string
-	err := s.db.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = ?`, key).Scan(&value)
-	return value, err
+// pruneExpired 清理已过期会话与过旧的健康事件，防止状态文件无限增长。
+func (s *Store) pruneExpired() {
+	now := time.Now()
+	live := s.st.Sessions[:0]
+	for _, session := range s.st.Sessions {
+		expires, err := time.Parse(time.RFC3339, session.ExpiresAt)
+		if err == nil && expires.After(now) {
+			live = append(live, session)
+		}
+	}
+	s.st.Sessions = live
+
+	cutoff := now.Add(-healthRetention).Format(time.RFC3339)
+	health := s.st.Health[:0]
+	for _, event := range s.st.Health {
+		if event.CreatedAt >= cutoff {
+			health = append(health, event)
+		}
+	}
+	s.st.Health = health
 }
 
-func (s *Store) SetSetting(ctx context.Context, key, value string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO app_settings (key, value, updated_at)
-		VALUES (?, ?, ?)
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-		key, value, nowString())
-	return err
+func (s *Store) GetSetting(_ context.Context, key string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value, ok := s.st.Settings[key]
+	if !ok {
+		return "", app.ErrNotFound
+	}
+	return value, nil
 }
 
-func (s *Store) CreateSession(ctx context.Context, session app.Session) (app.Session, error) {
+func (s *Store) SetSetting(_ context.Context, key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.st.Settings[key] = value
+	return s.save()
+}
+
+func (s *Store) CreateSession(_ context.Context, session app.Session) (app.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if session.ID == "" {
 		session.ID = newID("sess")
 	}
@@ -274,271 +193,329 @@ func (s *Store) CreateSession(ctx context.Context, session app.Session) (app.Ses
 	if session.LastAccessAt == "" {
 		session.LastAccessAt = now
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions
-		(id, id_hash, ip, user_agent, created_at, last_access_at, expires_at, revoked_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		session.ID, session.IDHash, session.IP, session.UserAgent, session.CreatedAt, session.LastAccessAt, session.ExpiresAt, session.RevokedAt)
-	if err != nil {
+	s.st.Sessions = append(s.st.Sessions, storedSession{
+		ID:           session.ID,
+		IDHash:       session.IDHash,
+		IP:           session.IP,
+		UserAgent:    session.UserAgent,
+		CreatedAt:    session.CreatedAt,
+		LastAccessAt: session.LastAccessAt,
+		ExpiresAt:    session.ExpiresAt,
+	})
+	if err := s.save(); err != nil {
 		return app.Session{}, err
 	}
-	return s.GetSessionByHash(ctx, session.IDHash)
+	return session, nil
 }
 
-func (s *Store) GetSessionByHash(ctx context.Context, idHash string) (app.Session, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, id_hash, ip, user_agent, created_at, last_access_at, expires_at, revoked_at
-		FROM sessions WHERE id_hash = ?`, idHash)
-	return scanSession(row)
-}
-
-func (s *Store) ListSessions(ctx context.Context) ([]app.Session, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, id_hash, ip, user_agent, created_at, last_access_at, expires_at, revoked_at
-		FROM sessions ORDER BY created_at DESC LIMIT 100`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	sessions := make([]app.Session, 0)
-	for rows.Next() {
-		session, err := scanSession(rows)
-		if err != nil {
-			return nil, err
+func (s *Store) GetSessionByHash(_ context.Context, idHash string) (app.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, session := range s.st.Sessions {
+		if session.IDHash == idHash {
+			return app.Session{
+				ID:           session.ID,
+				IDHash:       session.IDHash,
+				IP:           session.IP,
+				UserAgent:    session.UserAgent,
+				CreatedAt:    session.CreatedAt,
+				LastAccessAt: session.LastAccessAt,
+				ExpiresAt:    session.ExpiresAt,
+			}, nil
 		}
-		sessions = append(sessions, session)
 	}
-	return sessions, rows.Err()
+	return app.Session{}, app.ErrNotFound
 }
 
-func (s *Store) TouchSession(ctx context.Context, idHash string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET last_access_at = ? WHERE id_hash = ? AND revoked_at = ''`, nowString(), idHash)
-	return err
-}
-
-func (s *Store) RevokeSession(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at = ''`, nowString(), id)
-	return err
-}
-
-func (s *Store) RevokeSessionByHash(ctx context.Context, idHash string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE id_hash = ? AND revoked_at = ''`, nowString(), idHash)
-	return err
-}
-
-func (s *Store) RevokeOtherSessions(ctx context.Context, idHash string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE id_hash <> ? AND revoked_at = ''`, nowString(), idHash)
-	return err
-}
-
-func (s *Store) RevokeAllSessions(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE revoked_at = ''`, nowString())
-	return err
-}
-
-func (s *Store) ListServers(ctx context.Context) ([]app.Server, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, server_addr, server_port, auth_token, transport_protocol,
-		config_mode, auto_start, auto_restart, max_restarts, status, admin_addr, admin_port, admin_user, admin_password, frpc_version_id, restart_required, last_reload_at,
-		created_at, updated_at FROM servers ORDER BY created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	servers := make([]app.Server, 0)
-	for rows.Next() {
-		server, err := scanServer(rows)
-		if err != nil {
-			return nil, err
+// TouchSession 只更新内存中的最近访问时间，不立刻落盘——
+// 避免每个认证请求都重写状态文件；该字段会随下一次状态变更一并持久化。
+func (s *Store) TouchSession(_ context.Context, idHash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.st.Sessions {
+		if s.st.Sessions[i].IDHash == idHash {
+			s.st.Sessions[i].LastAccessAt = nowString()
+			return nil
 		}
-		servers = append(servers, server)
 	}
-	for i := range servers {
-		rules, err := s.ListRules(ctx, servers[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		servers[i].Rules = rules
-		servers[i].ProxyCount = len(rules)
-		servers[i].Uptime = "-"
-	}
-	return servers, rows.Err()
+	return nil
 }
 
-func (s *Store) GetServer(ctx context.Context, id string) (app.Server, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, name, server_addr, server_port, auth_token, transport_protocol,
-		config_mode, auto_start, auto_restart, max_restarts, status, admin_addr, admin_port, admin_user, admin_password, frpc_version_id, restart_required, last_reload_at,
-		created_at, updated_at FROM servers WHERE id = ?`, id)
-	server, err := scanServer(row)
+func (s *Store) RevokeSessionByHash(_ context.Context, idHash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.st.Sessions[:0]
+	for _, session := range s.st.Sessions {
+		if session.IDHash != idHash {
+			kept = append(kept, session)
+		}
+	}
+	s.st.Sessions = kept
+	return s.save()
+}
+
+func (s *Store) RevokeAllSessions(_ context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.st.Sessions = nil
+	return s.save()
+}
+
+func (s *Store) ListServers(_ context.Context) ([]app.Server, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	servers := make([]app.Server, len(s.st.Servers))
+	for i := range s.st.Servers {
+		servers[i] = cloneServer(s.st.Servers[i])
+	}
+	sort.SliceStable(servers, func(i, j int) bool { return servers[i].CreatedAt > servers[j].CreatedAt })
+	return servers, nil
+}
+
+func (s *Store) GetServer(_ context.Context, id string) (app.Server, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	server, _, err := s.findServer(id)
 	if err != nil {
 		return app.Server{}, err
 	}
-	rules, err := s.ListRules(ctx, server.ID)
-	if err != nil {
-		return app.Server{}, err
-	}
-	server.Rules = rules
-	server.ProxyCount = len(rules)
-	server.Uptime = "-"
-	return server, nil
+	return cloneServer(*server), nil
 }
 
-func (s *Store) CreateServer(ctx context.Context, input app.ServerInput) (app.Server, error) {
-	now := nowString()
-	id := newID("srv")
-	input = normalizeServerInput(input)
+func (s *Store) CreateServer(_ context.Context, input app.ServerInput) (app.Server, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	input = withAdminDefaults(input)
 	if input.AdminPort == 0 {
-		input.AdminPort = s.NextAdminPort(ctx)
+		input.AdminPort = s.nextAdminPort()
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO servers (
-		id, name, server_addr, server_port, auth_token, transport_protocol, config_mode, auto_start, auto_restart, max_restarts, status,
-		admin_addr, admin_port, admin_user, admin_password, frpc_version_id, restart_required, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', '127.0.0.1', ?, ?, ?, ?, 0, ?, ?)`,
-		id, input.Name, input.ServerAddr, input.ServerPort, input.AuthToken, input.TransportProtocol,
-		input.ConfigMode, boolInt(input.AutoStart), boolInt(input.AutoRestart), input.MaxRestarts, input.AdminPort, input.AdminUser, input.AdminPassword, input.FRPCVersionID, now, now)
-	if err != nil {
-		return app.Server{}, err
-	}
-	return s.GetServer(ctx, id)
-}
-
-func (s *Store) UpdateServer(ctx context.Context, id string, input app.ServerInput) (app.Server, error) {
-	input = normalizeServerInput(input)
-	current, err := s.GetServer(ctx, id)
-	if err != nil {
-		return app.Server{}, err
-	}
-	restartRequired := current.RestartRequired || current.ServerAddr != input.ServerAddr ||
-		current.ServerPort != input.ServerPort || current.AuthToken != input.AuthToken ||
-		current.TransportProtocol != input.TransportProtocol || current.AdminPort != input.AdminPort ||
-		current.ConfigMode != input.ConfigMode
-	_, err = s.db.ExecContext(ctx, `UPDATE servers SET name = ?, server_addr = ?, server_port = ?, auth_token = ?,
-		transport_protocol = ?, config_mode = ?, auto_start = ?, auto_restart = ?, max_restarts = ?, admin_port = ?, admin_user = ?, admin_password = ?, frpc_version_id = ?,
-		restart_required = ?, updated_at = ? WHERE id = ?`,
-		input.Name, input.ServerAddr, input.ServerPort, input.AuthToken, input.TransportProtocol, input.ConfigMode,
-		boolInt(input.AutoStart), boolInt(input.AutoRestart), input.MaxRestarts, input.AdminPort, input.AdminUser, input.AdminPassword, input.FRPCVersionID, boolInt(restartRequired), nowString(), id)
-	if err != nil {
-		return app.Server{}, err
-	}
-	return s.GetServer(ctx, id)
-}
-
-func (s *Store) DeleteServer(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM servers WHERE id = ?`, id)
-	return err
-}
-
-func (s *Store) SetServerStatus(ctx context.Context, id, status string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE servers SET status = ?, updated_at = ? WHERE id = ?`, status, nowString(), id)
-	return err
-}
-
-func (s *Store) MarkReloaded(ctx context.Context, id string) error {
 	now := nowString()
-	_, err := s.db.ExecContext(ctx, `UPDATE servers SET status = 'running', restart_required = 0, last_reload_at = ?, updated_at = ? WHERE id = ?`, now, now, id)
-	return err
+	server := app.Server{
+		ID:                newID("srv"),
+		Name:              input.Name,
+		ServerAddr:        input.ServerAddr,
+		ServerPort:        input.ServerPort,
+		AuthToken:         input.AuthToken,
+		TransportProtocol: input.TransportProtocol,
+		Status:            "stopped",
+		AutoStart:         input.AutoStart,
+		AutoRestart:       input.AutoRestart,
+		MaxRestarts:       input.MaxRestarts,
+		AdminAddr:         "127.0.0.1",
+		AdminPort:         input.AdminPort,
+		AdminUser:         input.AdminUser,
+		AdminPassword:     input.AdminPassword,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	s.st.Servers = append(s.st.Servers, server)
+	if err := s.save(); err != nil {
+		return app.Server{}, err
+	}
+	return cloneServer(server), nil
 }
 
-func (s *Store) ListRules(ctx context.Context, serverID string) ([]app.ProxyRule, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, server_id, name, type, local_ip, local_port, remote_port,
-		custom_domains, enabled, secret_key, role, server_name, bind_addr, bind_port, use_encryption, use_compression,
-		bandwidth_limit, locations, host_header_rewrite, http_user, http_password, request_headers, created_at, updated_at
-		FROM proxy_rules WHERE server_id = ? ORDER BY created_at ASC`, serverID)
+func (s *Store) UpdateServer(_ context.Context, id string, input app.ServerInput) (app.Server, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	input = withAdminDefaults(input)
+	server, _, err := s.findServer(id)
+	if err != nil {
+		return app.Server{}, err
+	}
+	server.RestartRequired = server.RestartRequired || server.ServerAddr != input.ServerAddr ||
+		server.ServerPort != input.ServerPort || server.AuthToken != input.AuthToken ||
+		server.TransportProtocol != input.TransportProtocol || server.AdminPort != input.AdminPort
+	server.Name = input.Name
+	server.ServerAddr = input.ServerAddr
+	server.ServerPort = input.ServerPort
+	server.AuthToken = input.AuthToken
+	server.TransportProtocol = input.TransportProtocol
+	server.AutoStart = input.AutoStart
+	server.AutoRestart = input.AutoRestart
+	server.MaxRestarts = input.MaxRestarts
+	server.AdminPort = input.AdminPort
+	server.AdminUser = input.AdminUser
+	server.AdminPassword = input.AdminPassword
+	server.UpdatedAt = nowString()
+	if err := s.save(); err != nil {
+		return app.Server{}, err
+	}
+	return cloneServer(*server), nil
+}
+
+func (s *Store) DeleteServer(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.st.Servers[:0]
+	for _, server := range s.st.Servers {
+		if server.ID != id {
+			kept = append(kept, server)
+		}
+	}
+	s.st.Servers = kept
+	delete(s.st.Processes, id)
+	return s.save()
+}
+
+func (s *Store) SetServerStatus(_ context.Context, id, status string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	server, _, err := s.findServer(id)
+	if err != nil {
+		return err
+	}
+	server.Status = status
+	server.UpdatedAt = nowString()
+	return s.save()
+}
+
+func (s *Store) MarkReloaded(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	server, _, err := s.findServer(id)
+	if err != nil {
+		return err
+	}
+	now := nowString()
+	server.Status = "running"
+	server.RestartRequired = false
+	server.LastReloadAt = now
+	server.UpdatedAt = now
+	return s.save()
+}
+
+func (s *Store) ListRules(_ context.Context, serverID string) ([]app.ProxyRule, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	server, _, err := s.findServer(serverID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	rules := make([]app.ProxyRule, 0)
-	for rows.Next() {
-		rule, err := scanRule(rows)
-		if err != nil {
-			return nil, err
-		}
-		rules = append(rules, rule)
+	rules := make([]app.ProxyRule, len(server.Rules))
+	copy(rules, server.Rules)
+	return rules, nil
+}
+
+func (s *Store) GetRule(_ context.Context, serverID, ruleID string) (app.ProxyRule, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rule, _, err := s.findRule(serverID, ruleID)
+	if err != nil {
+		return app.ProxyRule{}, err
 	}
-	return rules, rows.Err()
+	return *rule, nil
 }
 
-func (s *Store) GetRule(ctx context.Context, serverID, ruleID string) (app.ProxyRule, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, server_id, name, type, local_ip, local_port, remote_port,
-		custom_domains, enabled, secret_key, role, server_name, bind_addr, bind_port, use_encryption, use_compression,
-		bandwidth_limit, locations, host_header_rewrite, http_user, http_password, request_headers, created_at, updated_at
-		FROM proxy_rules WHERE server_id = ? AND id = ?`, serverID, ruleID)
-	return scanRule(row)
-}
-
-func (s *Store) CreateRule(ctx context.Context, serverID string, input app.ProxyRuleInput) (app.ProxyRule, error) {
-	input = normalizeRuleInput(input)
+func (s *Store) CreateRule(_ context.Context, serverID string, input app.ProxyRuleInput) (app.ProxyRule, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	server, _, err := s.findServer(serverID)
+	if err != nil {
+		return app.ProxyRule{}, err
+	}
+	for _, rule := range server.Rules {
+		if rule.Name == input.Name {
+			return app.ProxyRule{}, fmt.Errorf("rule name %q already exists", input.Name)
+		}
+	}
 	now := nowString()
-	id := newID("rule")
-	domains, _ := json.Marshal(input.CustomDomains)
-	locations, _ := json.Marshal(input.Locations)
-	headers, _ := json.Marshal(input.RequestHeaders)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO proxy_rules (
-		id, server_id, name, type, local_ip, local_port, remote_port, custom_domains, enabled, secret_key, role, server_name,
-		bind_addr, bind_port, use_encryption, use_compression, bandwidth_limit, locations, host_header_rewrite, http_user,
-		http_password, request_headers, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, serverID, input.Name, input.Type, input.LocalIP, input.LocalPort, input.RemotePort, string(domains), boolInt(input.Enabled),
-		input.SecretKey, input.Role, input.ServerName, input.BindAddr, input.BindPort, boolInt(input.UseEncryption), boolInt(input.UseCompression),
-		input.BandwidthLimit, string(locations), input.HostHeaderRewrite, input.HTTPUser, input.HTTPPassword, string(headers), now, now)
+	rule := ruleFromInput(input)
+	rule.ID = newID("rule")
+	rule.ServerID = serverID
+	rule.CreatedAt = now
+	rule.UpdatedAt = now
+	server.Rules = append(server.Rules, rule)
+	if err := s.save(); err != nil {
+		return app.ProxyRule{}, err
+	}
+	return rule, nil
+}
+
+func (s *Store) UpdateRule(_ context.Context, serverID, ruleID string, input app.ProxyRuleInput) (app.ProxyRule, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	server, _, err := s.findServer(serverID)
 	if err != nil {
 		return app.ProxyRule{}, err
 	}
-	return s.GetRule(ctx, serverID, id)
-}
-
-func (s *Store) UpdateRule(ctx context.Context, serverID, ruleID string, input app.ProxyRuleInput) (app.ProxyRule, error) {
-	input = normalizeRuleInput(input)
-	domains, _ := json.Marshal(input.CustomDomains)
-	locations, _ := json.Marshal(input.Locations)
-	headers, _ := json.Marshal(input.RequestHeaders)
-	_, err := s.db.ExecContext(ctx, `UPDATE proxy_rules SET name = ?, type = ?, local_ip = ?, local_port = ?,
-		remote_port = ?, custom_domains = ?, enabled = ?, secret_key = ?, role = ?, server_name = ?, bind_addr = ?, bind_port = ?,
-		use_encryption = ?, use_compression = ?, bandwidth_limit = ?, locations = ?, host_header_rewrite = ?, http_user = ?,
-		http_password = ?, request_headers = ?, updated_at = ? WHERE server_id = ? AND id = ?`,
-		input.Name, input.Type, input.LocalIP, input.LocalPort, input.RemotePort, string(domains), boolInt(input.Enabled), input.SecretKey,
-		input.Role, input.ServerName, input.BindAddr, input.BindPort, boolInt(input.UseEncryption), boolInt(input.UseCompression),
-		input.BandwidthLimit, string(locations), input.HostHeaderRewrite, input.HTTPUser, input.HTTPPassword, string(headers), nowString(), serverID, ruleID)
-	if err != nil {
-		return app.ProxyRule{}, err
-	}
-	return s.GetRule(ctx, serverID, ruleID)
-}
-
-func (s *Store) DeleteRule(ctx context.Context, serverID, ruleID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM proxy_rules WHERE server_id = ? AND id = ?`, serverID, ruleID)
-	return err
-}
-
-func (s *Store) ListVersions(ctx context.Context) ([]app.FRPCVersion, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, version, platform, arch, binary_path, source, active, created_at
-		FROM frpc_versions ORDER BY active DESC, created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	versions := make([]app.FRPCVersion, 0)
-	for rows.Next() {
-		version, err := scanVersion(rows)
-		if err != nil {
-			return nil, err
+	for _, existing := range server.Rules {
+		if existing.ID != ruleID && existing.Name == input.Name {
+			return app.ProxyRule{}, fmt.Errorf("rule name %q already exists", input.Name)
 		}
-		versions = append(versions, version)
 	}
-	return versions, rows.Err()
+	rule, _, err := s.findRule(serverID, ruleID)
+	if err != nil {
+		return app.ProxyRule{}, err
+	}
+	updated := ruleFromInput(input)
+	updated.ID = rule.ID
+	updated.ServerID = rule.ServerID
+	updated.CreatedAt = rule.CreatedAt
+	updated.UpdatedAt = nowString()
+	*rule = updated
+	if err := s.save(); err != nil {
+		return app.ProxyRule{}, err
+	}
+	return updated, nil
 }
 
-func (s *Store) ActiveVersion(ctx context.Context) (app.FRPCVersion, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, version, platform, arch, binary_path, source, active, created_at
-		FROM frpc_versions WHERE active = 1 ORDER BY created_at DESC LIMIT 1`)
-	return scanVersion(row)
+func (s *Store) DeleteRule(_ context.Context, serverID, ruleID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	server, _, err := s.findServer(serverID)
+	if err != nil {
+		return err
+	}
+	kept := server.Rules[:0]
+	for _, rule := range server.Rules {
+		if rule.ID != ruleID {
+			kept = append(kept, rule)
+		}
+	}
+	server.Rules = kept
+	return s.save()
 }
 
-func (s *Store) GetVersion(ctx context.Context, id string) (app.FRPCVersion, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, version, platform, arch, binary_path, source, active, created_at
-		FROM frpc_versions WHERE id = ?`, id)
-	return scanVersion(row)
+func (s *Store) ListVersions(_ context.Context) ([]app.FRPCVersion, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	versions := make([]app.FRPCVersion, len(s.st.Versions))
+	copy(versions, s.st.Versions)
+	sort.SliceStable(versions, func(i, j int) bool {
+		if versions[i].Active != versions[j].Active {
+			return versions[i].Active
+		}
+		return versions[i].CreatedAt > versions[j].CreatedAt
+	})
+	return versions, nil
 }
 
-func (s *Store) AddVersion(ctx context.Context, version app.FRPCVersion) (app.FRPCVersion, error) {
+func (s *Store) ActiveVersion(_ context.Context) (app.FRPCVersion, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, version := range s.st.Versions {
+		if version.Active {
+			return version, nil
+		}
+	}
+	return app.FRPCVersion{}, app.ErrNotFound
+}
+
+func (s *Store) GetVersion(_ context.Context, id string) (app.FRPCVersion, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, version := range s.st.Versions {
+		if version.ID == id {
+			return version, nil
+		}
+	}
+	return app.FRPCVersion{}, app.ErrNotFound
+}
+
+func (s *Store) AddVersion(_ context.Context, version app.FRPCVersion) (app.FRPCVersion, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if version.ID == "" {
 		version.ID = newID("frpc")
 	}
@@ -546,111 +523,118 @@ func (s *Store) AddVersion(ctx context.Context, version app.FRPCVersion) (app.FR
 		version.CreatedAt = nowString()
 	}
 	if version.Active {
-		if _, err := s.db.ExecContext(ctx, `UPDATE frpc_versions SET active = 0`); err != nil {
-			return app.FRPCVersion{}, err
+		for i := range s.st.Versions {
+			s.st.Versions[i].Active = false
 		}
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO frpc_versions
-		(id, version, platform, arch, binary_path, source, active, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		version.ID, version.Version, version.Platform, version.Arch, version.Path, version.Source, boolInt(version.Active), version.CreatedAt)
-	if err != nil {
+	// 同一 (version, platform, arch) 视为重复安装，替换旧记录。
+	kept := s.st.Versions[:0]
+	for _, existing := range s.st.Versions {
+		duplicate := existing.ID == version.ID ||
+			(existing.Version == version.Version && existing.Platform == version.Platform && existing.Arch == version.Arch)
+		if !duplicate {
+			kept = append(kept, existing)
+		}
+	}
+	s.st.Versions = append(kept, version)
+	if err := s.save(); err != nil {
 		return app.FRPCVersion{}, err
 	}
 	return version, nil
 }
 
-func (s *Store) SetActiveVersion(ctx context.Context, id string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
+func (s *Store) SetActiveVersion(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.st.Versions {
+		s.st.Versions[i].Active = s.st.Versions[i].ID == id
 	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE frpc_versions SET active = 0`); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE frpc_versions SET active = 1 WHERE id = ?`, id); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.save()
 }
 
-func (s *Store) UpsertProcess(ctx context.Context, info app.ProcessInfo) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO process_instances
-		(server_id, pid, frpc_version, config_path, log_path, started_at, stopped_at, exit_code)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(server_id) DO UPDATE SET pid = excluded.pid, frpc_version = excluded.frpc_version,
-		config_path = excluded.config_path, log_path = excluded.log_path, started_at = excluded.started_at,
-		stopped_at = excluded.stopped_at, exit_code = excluded.exit_code`,
-		info.ServerID, info.PID, info.FRPCVersion, info.ConfigPath, info.LogPath, info.StartedAt, info.StoppedAt, info.ExitCode)
-	return err
+func (s *Store) UpsertProcess(_ context.Context, info app.ProcessInfo) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.st.Processes[info.ServerID] = info
+	return s.save()
 }
 
-func (s *Store) GetProcess(ctx context.Context, serverID string) (app.ProcessInfo, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT server_id, pid, frpc_version, config_path, log_path, started_at, stopped_at, exit_code
-		FROM process_instances WHERE server_id = ?`, serverID)
-	var info app.ProcessInfo
-	err := row.Scan(&info.ServerID, &info.PID, &info.FRPCVersion, &info.ConfigPath, &info.LogPath, &info.StartedAt, &info.StoppedAt, &info.ExitCode)
-	return info, err
-}
-
-func (s *Store) DeleteProcess(ctx context.Context, serverID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM process_instances WHERE server_id = ?`, serverID)
-	return err
-}
-
-func (s *Store) AddConfigVersion(ctx context.Context, version app.ConfigVersion) error {
-	if version.ID == "" {
-		version.ID = newID("cfg")
+func (s *Store) GetProcess(_ context.Context, serverID string) (app.ProcessInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	info, ok := s.st.Processes[serverID]
+	if !ok {
+		return app.ProcessInfo{}, app.ErrNotFound
 	}
-	if version.CreatedAt == "" {
-		version.CreatedAt = nowString()
-	}
-	if version.VersionNo == 0 {
-		version.VersionNo = s.nextConfigVersionNo(ctx, version.ServerID)
-	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO config_versions
-		(id, server_id, version_no, toml_snapshot, change_summary, checksum, created_at, applied_at, apply_result)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		version.ID, version.ServerID, version.VersionNo, version.TOMLSnapshot, version.ChangeSummary, version.Checksum,
-		version.CreatedAt, version.AppliedAt, version.ApplyResult)
-	return err
+	return info, nil
 }
 
-func (s *Store) ListHealth(ctx context.Context) ([]app.HealthEvent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT h.id, h.server_id, COALESCE(s.name, ''), h.level, h.status, h.message, h.created_at
-		FROM health_events h LEFT JOIN servers s ON s.id = h.server_id ORDER BY h.created_at DESC LIMIT 20`)
-	if err != nil {
-		return nil, err
+func (s *Store) DeleteProcess(_ context.Context, serverID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.st.Processes, serverID)
+	return s.save()
+}
+
+func (s *Store) ListHealth(_ context.Context) ([]app.HealthEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 20
+	if len(s.st.Health) < count {
+		count = len(s.st.Health)
 	}
-	defer rows.Close()
-	events := make([]app.HealthEvent, 0)
-	for rows.Next() {
-		var event app.HealthEvent
-		if err := rows.Scan(&event.ID, &event.ServerID, &event.Server, &event.Level, &event.Status, &event.Message, &event.CreatedAt); err != nil {
-			return nil, err
-		}
-		events = append(events, event)
+	events := make([]app.HealthEvent, count)
+	// Health 按写入顺序存储，取末尾 N 条并倒序（最新在前）。
+	for i := 0; i < count; i++ {
+		events[i] = s.st.Health[len(s.st.Health)-1-i]
 	}
-	return events, rows.Err()
+	return events, nil
 }
 
-func (s *Store) AddHealth(ctx context.Context, serverID, level, message string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO health_events (id, server_id, level, status, message, created_at)
-		VALUES (?, ?, ?, 'open', ?, ?)`, newID("event"), serverID, level, message, nowString())
-	return err
+func (s *Store) AddHealth(_ context.Context, serverID, level, message string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	serverName := ""
+	if server, _, err := s.findServer(serverID); err == nil {
+		serverName = server.Name
+	}
+	s.st.Health = append(s.st.Health, app.HealthEvent{
+		ID:        newID("event"),
+		ServerID:  serverID,
+		Server:    serverName,
+		Level:     level,
+		Message:   message,
+		CreatedAt: nowString(),
+	})
+	if overflow := len(s.st.Health) - maxHealthEvents; overflow > 0 {
+		s.st.Health = append([]app.HealthEvent(nil), s.st.Health[overflow:]...)
+	}
+	return s.save()
 }
 
-func (s *Store) AddAudit(ctx context.Context, input app.AuditLogInput) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO audit_logs (
-		id, user_id, username, role, ip, user_agent, action, resource_type, resource_id, result, error, created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		newID("aud"), input.UserID, input.Username, input.Role, input.IP, input.UserAgent, input.Action,
-		input.ResourceType, input.ResourceID, input.Result, input.Error, nowString())
-	return err
+func (s *Store) AddAudit(_ context.Context, input app.AuditLogInput) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.st.Audit = append(s.st.Audit, app.AuditLog{
+		ID:           newID("aud"),
+		IP:           input.IP,
+		UserAgent:    input.UserAgent,
+		Action:       input.Action,
+		ResourceType: input.ResourceType,
+		ResourceID:   input.ResourceID,
+		Result:       input.Result,
+		Error:        input.Error,
+		CreatedAt:    nowString(),
+	})
+	if overflow := len(s.st.Audit) - maxAuditEntries; overflow > 0 {
+		s.st.Audit = append([]app.AuditLog(nil), s.st.Audit[overflow:]...)
+	}
+	return s.save()
 }
 
-func (s *Store) ListAuditLogs(ctx context.Context, query app.AuditLogQuery) (app.AuditLogPage, error) {
+func (s *Store) ListAuditLogs(_ context.Context, query app.AuditLogQuery) (app.AuditLogPage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if query.Page < 1 {
 		query.Page = 1
 	}
@@ -661,54 +645,71 @@ func (s *Store) ListAuditLogs(ctx context.Context, query app.AuditLogQuery) (app
 		query.PageSize = 200
 	}
 
-	where, args := auditWhere(query)
-	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs`+where, args...).Scan(&total); err != nil {
-		return app.AuditLogPage{}, err
-	}
-
-	offset := (query.Page - 1) * query.PageSize
-	listArgs := append(append([]any{}, args...), query.PageSize, offset)
-	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, username, role, ip, user_agent, action, resource_type,
-		resource_id, result, error, created_at FROM audit_logs`+where+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, listArgs...)
-	if err != nil {
-		return app.AuditLogPage{}, err
-	}
-	defer rows.Close()
-
-	items := make([]app.AuditLog, 0)
-	for rows.Next() {
-		item, err := scanAuditLog(rows)
-		if err != nil {
-			return app.AuditLogPage{}, err
+	action := strings.TrimSpace(query.Action)
+	result := strings.TrimSpace(query.Result)
+	filtered := make([]app.AuditLog, 0, len(s.st.Audit))
+	// Audit 按写入顺序存储，倒序遍历得到最新在前。
+	for i := len(s.st.Audit) - 1; i >= 0; i-- {
+		entry := s.st.Audit[i]
+		if action != "" && entry.Action != action {
+			continue
 		}
-		items = append(items, item)
+		if result != "" && entry.Result != result {
+			continue
+		}
+		filtered = append(filtered, entry)
 	}
-	return app.AuditLogPage{Items: items, Total: total, Page: query.Page, PageSize: query.PageSize}, rows.Err()
+
+	start := (query.Page - 1) * query.PageSize
+	if start > len(filtered) {
+		start = len(filtered)
+	}
+	end := start + query.PageSize
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	return app.AuditLogPage{
+		Items:    filtered[start:end],
+		Total:    len(filtered),
+		Page:     query.Page,
+		PageSize: query.PageSize,
+	}, nil
 }
 
-func (s *Store) nextConfigVersionNo(ctx context.Context, serverID string) int {
-	var n int
-	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version_no), 0) + 1 FROM config_versions WHERE server_id = ?`, serverID).Scan(&n)
-	if n == 0 {
-		return 1
-	}
-	return n
+func (s *Store) ClearAuditLogs(_ context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.st.Audit = nil
+	return s.save()
 }
 
-func (s *Store) NextAdminPort(ctx context.Context) int {
+func (s *Store) findServer(id string) (*app.Server, int, error) {
+	for i := range s.st.Servers {
+		if s.st.Servers[i].ID == id {
+			return &s.st.Servers[i], i, nil
+		}
+	}
+	return nil, -1, app.ErrNotFound
+}
+
+func (s *Store) findRule(serverID, ruleID string) (*app.ProxyRule, int, error) {
+	server, _, err := s.findServer(serverID)
+	if err != nil {
+		return nil, -1, err
+	}
+	for i := range server.Rules {
+		if server.Rules[i].ID == ruleID {
+			return &server.Rules[i], i, nil
+		}
+	}
+	return nil, -1, app.ErrNotFound
+}
+
+func (s *Store) nextAdminPort() int {
 	base := 17400
-	rows, err := s.db.QueryContext(ctx, `SELECT admin_port FROM servers`)
-	if err != nil {
-		return base
-	}
-	defer rows.Close()
 	used := map[int]bool{}
-	for rows.Next() {
-		var port int
-		if rows.Scan(&port) == nil {
-			used[port] = true
-		}
+	for _, server := range s.st.Servers {
+		used[server.AdminPort] = true
 	}
 	for port := base; port < base+1000; port++ {
 		if !used[port] {
@@ -718,96 +719,44 @@ func (s *Store) NextAdminPort(ctx context.Context) int {
 	return base
 }
 
-type scanner interface {
-	Scan(dest ...any) error
+// cloneServer 返回深拷贝，避免调用方修改（如掩码处理）影响内部状态。
+func cloneServer(server app.Server) app.Server {
+	rules := make([]app.ProxyRule, len(server.Rules))
+	copy(rules, server.Rules)
+	server.Rules = rules
+	server.ProxyCount = len(rules)
+	server.Uptime = "-"
+	return server
 }
 
-func scanServer(row scanner) (app.Server, error) {
-	var server app.Server
-	var autoStart, autoRestart, restartRequired int
-	err := row.Scan(&server.ID, &server.Name, &server.ServerAddr, &server.ServerPort, &server.AuthToken,
-		&server.TransportProtocol, &server.ConfigMode, &autoStart, &autoRestart, &server.MaxRestarts, &server.Status, &server.AdminAddr,
-		&server.AdminPort, &server.AdminUser, &server.AdminPassword, &server.FRPCVersionID, &restartRequired, &server.LastReloadAt, &server.CreatedAt, &server.UpdatedAt)
-	server.AutoStart = autoStart == 1
-	server.AutoRestart = autoRestart == 1
-	if server.MaxRestarts <= 0 {
-		server.MaxRestarts = 3
+func ruleFromInput(input app.ProxyRuleInput) app.ProxyRule {
+	return app.ProxyRule{
+		Name:              input.Name,
+		Type:              input.Type,
+		LocalIP:           input.LocalIP,
+		LocalPort:         input.LocalPort,
+		RemotePort:        input.RemotePort,
+		CustomDomains:     input.CustomDomains,
+		Enabled:           input.Enabled,
+		SecretKey:         input.SecretKey,
+		Role:              input.Role,
+		ServerName:        input.ServerName,
+		BindAddr:          input.BindAddr,
+		BindPort:          input.BindPort,
+		UseEncryption:     input.UseEncryption,
+		UseCompression:    input.UseCompression,
+		BandwidthLimit:    input.BandwidthLimit,
+		Locations:         input.Locations,
+		HostHeaderRewrite: input.HostHeaderRewrite,
+		HTTPUser:          input.HTTPUser,
+		HTTPPassword:      input.HTTPPassword,
+		RequestHeaders:    input.RequestHeaders,
 	}
-	server.RestartRequired = restartRequired == 1
-	return server, err
 }
 
-func scanRule(row scanner) (app.ProxyRule, error) {
-	var rule app.ProxyRule
-	var customDomains, locations, requestHeaders string
-	var enabled, useEncryption, useCompression int
-	err := row.Scan(&rule.ID, &rule.ServerID, &rule.Name, &rule.Type, &rule.LocalIP, &rule.LocalPort,
-		&rule.RemotePort, &customDomains, &enabled, &rule.SecretKey, &rule.Role, &rule.ServerName, &rule.BindAddr,
-		&rule.BindPort, &useEncryption, &useCompression, &rule.BandwidthLimit, &locations, &rule.HostHeaderRewrite,
-		&rule.HTTPUser, &rule.HTTPPassword, &requestHeaders, &rule.CreatedAt, &rule.UpdatedAt)
-	if customDomains != "" {
-		_ = json.Unmarshal([]byte(customDomains), &rule.CustomDomains)
-	}
-	if locations != "" {
-		_ = json.Unmarshal([]byte(locations), &rule.Locations)
-	}
-	if requestHeaders != "" {
-		_ = json.Unmarshal([]byte(requestHeaders), &rule.RequestHeaders)
-	}
-	rule.Enabled = enabled == 1
-	rule.UseEncryption = useEncryption == 1
-	rule.UseCompression = useCompression == 1
-	return rule, err
-}
-
-func scanVersion(row scanner) (app.FRPCVersion, error) {
-	var version app.FRPCVersion
-	var active int
-	err := row.Scan(&version.ID, &version.Version, &version.Platform, &version.Arch, &version.Path, &version.Source, &active, &version.CreatedAt)
-	version.Active = active == 1
-	version.Installed = version.Path != ""
-	version.Latest = version.Version
-	return version, err
-}
-
-func scanSession(row scanner) (app.Session, error) {
-	var session app.Session
-	err := row.Scan(&session.ID, &session.IDHash, &session.IP, &session.UserAgent, &session.CreatedAt, &session.LastAccessAt, &session.ExpiresAt, &session.RevokedAt)
-	return session, err
-}
-
-func scanAuditLog(row scanner) (app.AuditLog, error) {
-	var log app.AuditLog
-	err := row.Scan(&log.ID, &log.UserID, &log.Username, &log.Role, &log.IP, &log.UserAgent, &log.Action,
-		&log.ResourceType, &log.ResourceID, &log.Result, &log.Error, &log.CreatedAt)
-	return log, err
-}
-
-func auditWhere(query app.AuditLogQuery) (string, []any) {
-	clauses := make([]string, 0, 3)
-	args := make([]any, 0, 3)
-	if action := strings.TrimSpace(query.Action); action != "" {
-		clauses = append(clauses, "action = ?")
-		args = append(args, action)
-	}
-	if user := strings.TrimSpace(query.User); user != "" {
-		clauses = append(clauses, "(username LIKE ? OR user_id = ?)")
-		args = append(args, "%"+user+"%", user)
-	}
-	if result := strings.TrimSpace(query.Result); result != "" {
-		clauses = append(clauses, "result = ?")
-		args = append(args, result)
-	}
-	if len(clauses) == 0 {
-		return "", args
-	}
-	return " WHERE " + strings.Join(clauses, " AND "), args
-}
-
-func normalizeServerInput(input app.ServerInput) app.ServerInput {
-	input.Name = strings.TrimSpace(input.Name)
-	input.ServerAddr = strings.TrimSpace(input.ServerAddr)
-	input.AuthToken = strings.TrimSpace(input.AuthToken)
+// withAdminDefaults 补全 Admin API 的凭据默认值。
+// 其余字段的清洗和默认值由 app 层的 normalize 函数负责。
+func withAdminDefaults(input app.ServerInput) app.ServerInput {
 	input.AdminUser = strings.TrimSpace(input.AdminUser)
 	input.AdminPassword = strings.TrimSpace(input.AdminPassword)
 	if input.AdminUser == "" {
@@ -816,64 +765,7 @@ func normalizeServerInput(input app.ServerInput) app.ServerInput {
 	if input.AdminPassword == "" {
 		input.AdminPassword = randomToken(16)
 	}
-	if input.ServerPort == 0 {
-		input.ServerPort = 7000
-	}
-	if input.TransportProtocol == "" {
-		input.TransportProtocol = "tcp"
-	}
-	if input.ConfigMode == "" {
-		input.ConfigMode = "toml_reload"
-	}
-	if input.MaxRestarts <= 0 {
-		input.MaxRestarts = 3
-	}
 	return input
-}
-
-func normalizeRuleInput(input app.ProxyRuleInput) app.ProxyRuleInput {
-	input.Name = strings.TrimSpace(input.Name)
-	input.Type = strings.ToLower(strings.TrimSpace(input.Type))
-	input.SecretKey = strings.TrimSpace(input.SecretKey)
-	input.Role = strings.ToLower(strings.TrimSpace(input.Role))
-	input.ServerName = strings.TrimSpace(input.ServerName)
-	input.BindAddr = strings.TrimSpace(input.BindAddr)
-	input.BandwidthLimit = strings.TrimSpace(input.BandwidthLimit)
-	input.HostHeaderRewrite = strings.TrimSpace(input.HostHeaderRewrite)
-	input.HTTPUser = strings.TrimSpace(input.HTTPUser)
-	input.HTTPPassword = strings.TrimSpace(input.HTTPPassword)
-	if input.LocalIP == "" {
-		input.LocalIP = "127.0.0.1"
-	}
-	if input.BindAddr == "" {
-		input.BindAddr = "127.0.0.1"
-	}
-	input.LocalIP = strings.TrimSpace(input.LocalIP)
-	input.CustomDomains = cleanStringList(input.CustomDomains)
-	input.Locations = cleanStringList(input.Locations)
-	input.RequestHeaders = cleanStringList(input.RequestHeaders)
-	if !input.Enabled {
-		input.Enabled = false
-	}
-	return input
-}
-
-func cleanStringList(values []string) []string {
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			out = append(out, value)
-		}
-	}
-	return out
-}
-
-func boolInt(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
 }
 
 func nowString() string {

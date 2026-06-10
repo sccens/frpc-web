@@ -1,19 +1,19 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { Activity, ArrowRight, KeyRound, Moon, ShieldCheck, Sparkles, Sun } from 'lucide-vue-next'
+import { Activity, ArrowRight, KeyRound, ShieldCheck, Sparkles } from 'lucide-vue-next'
 import { login } from '../api/client'
+import ThemeToggle from '../components/ThemeToggle.vue'
+import { errorMessage } from '../utils/errors'
 import { useThemePreference } from '../utils/theme'
 
 const router = useRouter()
 const route = useRoute()
 const loading = ref(false)
 const accessKey = ref('')
-const { theme, resolvedTheme, setTheme } = useThemePreference()
+const { theme } = useThemePreference()
 
 const canSubmit = computed(() => accessKey.value.trim().length >= 8)
-const isDark = computed(() => theme.value === 'dark')
 
 async function submit() {
   if (!canSubmit.value) return
@@ -22,46 +22,19 @@ async function submit() {
     await login({ accessKey: accessKey.value.trim() })
     await router.replace(String(route.query.redirect || '/dashboard'))
   } catch (err) {
-    ElMessage.error(errorMessage(err))
+    ElMessage.error(errorMessage(err, '登录失败'))
   } finally {
     loading.value = false
   }
 }
-
-function errorMessage(err: unknown) {
-  if (typeof err === 'object' && err !== null && 'response' in err) {
-    const response = (err as { response?: { data?: { error?: string; message?: string } } }).response
-    return response?.data?.error || response?.data?.message || '登录失败'
-  }
-  return err instanceof Error ? err.message : '登录失败'
-}
-
-function toggleTheme() {
-  setTheme(isDark.value ? 'light' : 'dark')
-}
 </script>
 
 <template>
-  <main class="auth-control-shell" :data-auth-theme="resolvedTheme">
+  <main class="auth-control-shell" :data-auth-theme="theme">
     <div class="auth-aurora auth-aurora-a" />
     <div class="auth-aurora auth-aurora-b" />
 
-    <button
-      class="theme-switch theme-float"
-      :class="{ 'is-dark': isDark }"
-      type="button"
-      :aria-label="isDark ? '切换浅色模式' : '切换暗色模式'"
-      :aria-pressed="isDark"
-      @click="toggleTheme"
-    >
-      <span class="theme-switch-icon theme-switch-sun">
-        <Sun :size="14" :stroke-width="1.9" />
-      </span>
-      <span class="theme-switch-icon theme-switch-moon">
-        <Moon :size="14" :stroke-width="1.9" />
-      </span>
-      <span class="theme-switch-thumb" aria-hidden="true" />
-    </button>
+    <ThemeToggle class="theme-float" />
 
     <section class="auth-control-grid animate-enter">
       <div class="auth-story">
@@ -81,7 +54,7 @@ function toggleTheme() {
         <div class="control-preview-card">
           <div class="control-preview-top">
             <span><i class="live-dot" /> Local Console</span>
-            <code>JWT Cookie</code>
+            <code>Session Cookie</code>
           </div>
           <div class="control-preview-grid">
             <div>
@@ -103,7 +76,7 @@ function toggleTheme() {
         <div class="auth-card-heading">
           <p class="overline">Owner Login</p>
           <h2>Secure Access</h2>
-          <span>输入 Access Key 后，后端会签发 HttpOnly JWT 会话 Cookie。</span>
+          <span>输入 Access Key 后，后端会签发 HttpOnly 会话 Cookie。</span>
         </div>
 
         <label class="auth-control-field">

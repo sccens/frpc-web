@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { Activity, ArrowRight, KeyRound, Moon, ShieldCheck, Sparkles, Sun } from 'lucide-vue-next'
+import { Activity, ArrowRight, KeyRound, ShieldCheck, Sparkles } from 'lucide-vue-next'
 import { bootstrapAdmin } from '../api/client'
+import ThemeToggle from '../components/ThemeToggle.vue'
+import { errorMessage } from '../utils/errors'
 import { useThemePreference } from '../utils/theme'
 
 const router = useRouter()
@@ -11,10 +12,9 @@ const route = useRoute()
 const loading = ref(false)
 const accessKey = ref('')
 const confirmAccessKey = ref('')
-const { theme, resolvedTheme, setTheme } = useThemePreference()
+const { theme } = useThemePreference()
 
 const canSubmit = computed(() => accessKey.value.trim().length >= 8 && accessKey.value === confirmAccessKey.value)
-const isDark = computed(() => theme.value === 'dark')
 
 async function submit() {
   if (!canSubmit.value) return
@@ -24,46 +24,19 @@ async function submit() {
     ElMessage.success('Access Key 已初始化')
     await router.replace(String(route.query.redirect || '/dashboard'))
   } catch (err) {
-    ElMessage.error(errorMessage(err))
+    ElMessage.error(errorMessage(err, '初始化失败'))
   } finally {
     loading.value = false
   }
 }
-
-function errorMessage(err: unknown) {
-  if (typeof err === 'object' && err !== null && 'response' in err) {
-    const response = (err as { response?: { data?: { error?: string; message?: string } } }).response
-    return response?.data?.error || response?.data?.message || '初始化失败'
-  }
-  return err instanceof Error ? err.message : '初始化失败'
-}
-
-function toggleTheme() {
-  setTheme(isDark.value ? 'light' : 'dark')
-}
 </script>
 
 <template>
-  <main class="auth-control-shell" :data-auth-theme="resolvedTheme">
+  <main class="auth-control-shell" :data-auth-theme="theme">
     <div class="auth-aurora auth-aurora-a" />
     <div class="auth-aurora auth-aurora-b" />
 
-    <button
-      class="theme-switch theme-float"
-      :class="{ 'is-dark': isDark }"
-      type="button"
-      :aria-label="isDark ? '切换浅色模式' : '切换暗色模式'"
-      :aria-pressed="isDark"
-      @click="toggleTheme"
-    >
-      <span class="theme-switch-icon theme-switch-sun">
-        <Sun :size="14" :stroke-width="1.9" />
-      </span>
-      <span class="theme-switch-icon theme-switch-moon">
-        <Moon :size="14" :stroke-width="1.9" />
-      </span>
-      <span class="theme-switch-thumb" aria-hidden="true" />
-    </button>
+    <ThemeToggle class="theme-float" />
 
     <section class="auth-control-grid animate-enter">
       <div class="auth-story">
@@ -77,7 +50,7 @@ function toggleTheme() {
         <div class="auth-story-copy">
           <span class="auth-pill"><Sparkles :size="14" :stroke-width="1.8" /> First Run</span>
           <h1>Secure Access</h1>
-          <p>创建唯一的本机 Access Key。之后所有控制台请求都会通过 HttpOnly JWT Cookie 和服务端会话校验。</p>
+          <p>创建唯一的本机 Access Key。之后所有控制台请求都会通过 HttpOnly 会话 Cookie 和服务端会话校验。</p>
         </div>
 
         <div class="control-preview-card">

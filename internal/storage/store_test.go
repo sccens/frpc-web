@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sccens/frpc-web/internal/app"
@@ -17,13 +18,12 @@ func TestStoreCRUDAndFilePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	defer store.Close()
 
 	if mode := mustMode(t, dir); mode.Perm() != 0o700 {
 		t.Fatalf("data dir mode = %v, want 0700", mode.Perm())
 	}
-	if mode := mustMode(t, filepath.Join(dir, "app.db")); mode.Perm() != 0o600 {
-		t.Fatalf("db mode = %v, want 0600", mode.Perm())
+	if mode := mustMode(t, filepath.Join(dir, stateFileName)); mode.Perm() != 0o600 {
+		t.Fatalf("state file mode = %v, want 0600", mode.Perm())
 	}
 
 	version, err := store.AddVersion(ctx, app.FRPCVersion{
@@ -52,17 +52,18 @@ func TestStoreCRUDAndFilePermissions(t *testing.T) {
 		ServerPort:        7000,
 		AuthToken:         "secret",
 		TransportProtocol: "tcp",
-		ConfigMode:        "toml_reload",
 		AutoStart:         true,
 		AutoRestart:       true,
 		MaxRestarts:       4,
-		FRPCVersionID:     version.ID,
 	})
 	if err != nil {
 		t.Fatalf("create server: %v", err)
 	}
 	if server.AdminPort == 0 {
 		t.Fatal("admin port should be allocated")
+	}
+	if server.AdminUser == "" || server.AdminPassword == "" {
+		t.Fatal("admin credentials should be defaulted")
 	}
 	if !server.AutoRestart || server.MaxRestarts != 4 {
 		t.Fatalf("unexpected restart policy: auto=%v max=%d", server.AutoRestart, server.MaxRestarts)
@@ -82,6 +83,11 @@ func TestStoreCRUDAndFilePermissions(t *testing.T) {
 	if !rule.Enabled || rule.RemotePort != 6022 {
 		t.Fatalf("unexpected rule: %#v", rule)
 	}
+	if _, err := store.CreateRule(ctx, server.ID, app.ProxyRuleInput{
+		Name: "ssh", Type: "tcp", LocalIP: "127.0.0.1", LocalPort: 22, RemotePort: 6023, Enabled: true,
+	}); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("duplicate rule name error = %v, want already exists", err)
+	}
 
 	servers, err := store.ListServers(ctx)
 	if err != nil {
@@ -89,6 +95,57 @@ func TestStoreCRUDAndFilePermissions(t *testing.T) {
 	}
 	if len(servers) != 1 || servers[0].ProxyCount != 1 {
 		t.Fatalf("unexpected servers: %#v", servers)
+	}
+
+	// 重新打开验证持久化：状态应从 state.json 完整恢复。
+	reopened, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	restored, err := reopened.GetServer(ctx, server.ID)
+	if err != nil {
+		t.Fatalf("get restored server: %v", err)
+	}
+	if restored.AuthToken != "secret" || restored.ProxyCount != 1 {
+		t.Fatalf("unexpected restored server: %#v", restored)
+	}
+	if _, err := reopened.ActiveVersion(ctx); err != nil {
+		t.Fatalf("restored active version: %v", err)
+	}
+}
+
+func TestStoreNotFoundAndAuditCap(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+
+	if _, err := store.GetServer(ctx, "missing"); err != app.ErrNotFound {
+		t.Fatalf("get missing server error = %v, want ErrNotFound", err)
+	}
+	if _, err := store.GetSetting(ctx, "missing"); err != app.ErrNotFound {
+		t.Fatalf("get missing setting error = %v, want ErrNotFound", err)
+	}
+
+	for i := 0; i < maxAuditEntries+50; i++ {
+		if err := store.AddAudit(ctx, app.AuditLogInput{Action: "test", Result: "success"}); err != nil {
+			t.Fatalf("add audit: %v", err)
+		}
+	}
+	page, err := store.ListAuditLogs(ctx, app.AuditLogQuery{PageSize: 10})
+	if err != nil {
+		t.Fatalf("list audit: %v", err)
+	}
+	if page.Total != maxAuditEntries {
+		t.Fatalf("audit total = %d, want capped at %d", page.Total, maxAuditEntries)
+	}
+	if err := store.ClearAuditLogs(ctx); err != nil {
+		t.Fatalf("clear audit: %v", err)
+	}
+	page, err = store.ListAuditLogs(ctx, app.AuditLogQuery{})
+	if err != nil || page.Total != 0 {
+		t.Fatalf("audit after clear: total=%d err=%v", page.Total, err)
 	}
 }
 

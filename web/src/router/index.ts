@@ -1,14 +1,14 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import AppLayout from '../layouts/AppLayout.vue'
-import BootstrapPage from '../pages/BootstrapPage.vue'
-import DashboardPage from '../pages/DashboardPage.vue'
-import LoginPage from '../pages/LoginPage.vue'
-import ServersPage from '../pages/ServersPage.vue'
-import LogsPage from '../pages/LogsPage.vue'
-import SettingsPage from '../pages/SettingsPage.vue'
-import StatsPage from '../pages/StatsPage.vue'
-import AuditPage from '../pages/AuditPage.vue'
 import { getAuthStatus } from '../api/client'
+
+const AppLayout = () => import('../layouts/AppLayout.vue')
+const BootstrapPage = () => import('../pages/BootstrapPage.vue')
+const DashboardPage = () => import('../pages/DashboardPage.vue')
+const LoginPage = () => import('../pages/LoginPage.vue')
+const ServersPage = () => import('../pages/ServersPage.vue')
+const SettingsPage = () => import('../pages/SettingsPage.vue')
+const TopologyPage = () => import('../pages/TopologyPage.vue')
+const TrafficDashboardPage = () => import('../pages/TrafficDashboardPage.vue')
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -22,11 +22,13 @@ export const router = createRouter({
       children: [
         { path: 'dashboard', name: 'dashboard', component: DashboardPage },
         { path: 'servers', name: 'servers', component: ServersPage },
-        { path: 'logs', name: 'logs', component: LogsPage },
-        { path: 'versions', redirect: '/settings' },
-        { path: 'stats', name: 'stats', component: StatsPage },
-        { path: 'audit', name: 'audit', component: AuditPage },
+        { path: 'topology', name: 'topology', component: TopologyPage },
+        { path: 'traffic', name: 'traffic', component: TrafficDashboardPage },
         { path: 'settings', name: 'settings', component: SettingsPage },
+        { path: 'logs', redirect: '/dashboard' },
+        { path: 'stats', redirect: '/traffic' },
+        { path: 'audit', redirect: '/settings' },
+        { path: 'versions', redirect: '/settings' },
       ],
     },
   ],

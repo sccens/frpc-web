@@ -1,0 +1,158 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Build frontend
+        run: |
+          cd web
+          npm ci
+          npm run build
+          ls -lh dist/
+
+      - name: Verify frontend build
+        run: |
+          if [ ! -f web/dist/index.html ]; then
+            echo "Frontend build failed: index.html not found"
+            exit 1
+          fi
+          echo "Frontend build successful"
+
+      - name: Build binaries for multiple platforms
+        run: |
+          mkdir -p dist
+
+          # Linux amd64
+          echo "Building linux/amd64..."
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -tags embed \
+            -trimpath \
+            -ldflags "-s -w -X main.Version=${{ github.ref_name }}" \
+            -o dist/frpc-web_linux_amd64 \
+            ./cmd/frpc-web
+
+          # Linux arm64
+          echo "Building linux/arm64..."
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+            -tags embed \
+            -trimpath \
+            -ldflags "-s -w -X main.Version=${{ github.ref_name }}" \
+            -o dist/frpc-web_linux_arm64 \
+            ./cmd/frpc-web
+
+          # macOS amd64
+          echo "Building darwin/amd64..."
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build \
+            -tags embed \
+            -trimpath \
+            -ldflags "-s -w -X main.Version=${{ github.ref_name }}" \
+            -o dist/frpc-web_darwin_amd64 \
+            ./cmd/frpc-web
+
+          # macOS arm64 (Apple Silicon)
+          echo "Building darwin/arm64..."
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build \
+            -tags embed \
+            -trimpath \
+            -ldflags "-s -w -X main.Version=${{ github.ref_name }}" \
+            -o dist/frpc-web_darwin_arm64 \
+            ./cmd/frpc-web
+
+          # Set executable permissions
+          chmod +x dist/frpc-web_*
+
+          # List built files
+          ls -lh dist/
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create release notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          ## 🎉 FRPC-Web ${{ github.ref_name }}
+
+          ### 📦 快速安装
+
+          **Linux / macOS**:
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash
+          ```
+
+          **手动安装**:
+          1. 从下方 Assets 下载适合你系统的二进制文件
+          2. 赋予执行权限：`chmod +x frpc-web_*`
+          3. 移动到 PATH：`sudo mv frpc-web_* /usr/local/bin/frpc-web`
+          4. 运行：`frpc-web`
+
+          ### 📋 支持平台
+
+          - ✅ Linux (amd64, arm64)
+          - ✅ macOS (Intel, Apple Silicon)
+
+          ### 🔒 SHA256 校验和
+
+          下载后请验证文件完整性：
+          ```bash
+          sha256sum -c SHA256SUMS
+          ```
+
+          ### 📝 更新内容
+
+          请查看 [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
+
+          ### 💬 反馈
+
+          遇到问题？请提交 [Issue](https://github.com/${{ github.repository }}/issues)
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/frpc-web_*
+            dist/SHA256SUMS
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ github.ref_name }}
+          path: dist/
+          retention-days: 30

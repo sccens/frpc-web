@@ -16,27 +16,12 @@ type Summary struct {
 }
 
 type Settings struct {
-	Addr               string `json:"addr"`
-	DataDir            string `json:"dataDir"`
-	AuthNotice         string `json:"authNotice"`
-	GithubProxy        string `json:"githubProxy"`
-	LogAutoRefresh     bool   `json:"logAutoRefresh"`
-	LogRefreshInterval int    `json:"logRefreshInterval"`
+	Addr        string `json:"addr"`
+	GithubProxy string `json:"githubProxy"`
 }
 
 type SettingsInput struct {
-	GithubProxy        string `json:"githubProxy"`
-	LogAutoRefresh     bool   `json:"logAutoRefresh"`
-	LogRefreshInterval int    `json:"logRefreshInterval"`
-}
-
-type User struct {
-	ID        string `json:"id"`
-	Username  string `json:"username"`
-	Role      string `json:"role"`
-	Enabled   bool   `json:"enabled"`
-	CreatedAt string `json:"createdAt"`
-	UpdatedAt string `json:"updatedAt"`
+	GithubProxy string `json:"githubProxy"`
 }
 
 type AuthInput struct {
@@ -44,14 +29,8 @@ type AuthInput struct {
 }
 
 type AuthStatus struct {
-	Bootstrapped  bool  `json:"bootstrapped"`
-	Authenticated bool  `json:"authenticated"`
-	User          *User `json:"user,omitempty"`
-}
-
-type AuthSession struct {
-	User    User    `json:"user"`
-	Session Session `json:"session,omitempty"`
+	Bootstrapped  bool `json:"bootstrapped"`
+	Authenticated bool `json:"authenticated"`
 }
 
 type AuthMeta struct {
@@ -73,15 +52,10 @@ type Session struct {
 	CreatedAt    string `json:"createdAt"`
 	LastAccessAt string `json:"lastAccessAt"`
 	ExpiresAt    string `json:"expiresAt"`
-	RevokedAt    string `json:"revokedAt,omitempty"`
-	Current      bool   `json:"current,omitempty"`
 }
 
 type AuditLog struct {
 	ID           string `json:"id"`
-	UserID       string `json:"userId"`
-	Username     string `json:"username"`
-	Role         string `json:"role"`
 	IP           string `json:"ip"`
 	UserAgent    string `json:"userAgent"`
 	Action       string `json:"action"`
@@ -93,9 +67,6 @@ type AuditLog struct {
 }
 
 type AuditLogInput struct {
-	UserID       string
-	Username     string
-	Role         string
 	IP           string
 	UserAgent    string
 	Action       string
@@ -109,7 +80,6 @@ type AuditLogQuery struct {
 	Page     int
 	PageSize int
 	Action   string
-	User     string
 	Result   string
 }
 
@@ -151,9 +121,7 @@ type ServerStats struct {
 	ServerID         string `json:"serverId"`
 	Name             string `json:"name"`
 	Status           string `json:"status"`
-	AdminAddr        string `json:"adminAddr"`
 	AdminPort        int    `json:"adminPort"`
-	ConfigMode       string `json:"configMode"`
 	ProxyCount       int    `json:"proxyCount"`
 	OnlineProxies    int    `json:"onlineProxies"`
 	ErrorProxies     int    `json:"errorProxies"`
@@ -208,7 +176,6 @@ type Server struct {
 	ServerPort        int         `json:"serverPort"`
 	AuthToken         string      `json:"authToken,omitempty"`
 	TransportProtocol string      `json:"transportProtocol"`
-	ConfigMode        string      `json:"configMode"`
 	Status            string      `json:"status"`
 	AutoStart         bool        `json:"autoStart"`
 	AutoRestart       bool        `json:"autoRestart"`
@@ -221,7 +188,6 @@ type Server struct {
 	AdminPort         int         `json:"adminPort"`
 	AdminUser         string      `json:"adminUser,omitempty"`
 	AdminPassword     string      `json:"adminPassword,omitempty"`
-	FRPCVersionID     string      `json:"frpcVersionId"`
 	CreatedAt         string      `json:"createdAt"`
 	UpdatedAt         string      `json:"updatedAt"`
 	Rules             []ProxyRule `json:"rules,omitempty"`
@@ -233,14 +199,12 @@ type ServerInput struct {
 	ServerPort        int    `json:"serverPort"`
 	AuthToken         string `json:"authToken"`
 	TransportProtocol string `json:"transportProtocol"`
-	ConfigMode        string `json:"configMode"`
 	AutoStart         bool   `json:"autoStart"`
 	AutoRestart       bool   `json:"autoRestart"`
 	MaxRestarts       int    `json:"maxRestarts"`
 	AdminPort         int    `json:"adminPort"`
 	AdminUser         string `json:"adminUser,omitempty"`
 	AdminPassword     string `json:"adminPassword,omitempty"`
-	FRPCVersionID     string `json:"frpcVersionId"`
 }
 
 type ProxyRule struct {
@@ -299,7 +263,6 @@ type HealthEvent struct {
 	ServerID  string `json:"serverId"`
 	Server    string `json:"server"`
 	Message   string `json:"message"`
-	Status    string `json:"status"`
 	CreatedAt string `json:"createdAt"`
 }
 
@@ -330,31 +293,18 @@ type ProcessInfo struct {
 	ConfigPath  string `json:"configPath"`
 	LogPath     string `json:"logPath"`
 	StartedAt   string `json:"startedAt"`
-	StoppedAt   string `json:"stoppedAt"`
-	ExitCode    int    `json:"exitCode"`
-}
-
-type ConfigVersion struct {
-	ID            string `json:"id"`
-	ServerID      string `json:"serverId"`
-	VersionNo     int    `json:"versionNo"`
-	TOMLSnapshot  string `json:"tomlSnapshot"`
-	ChangeSummary string `json:"changeSummary"`
-	Checksum      string `json:"checksum"`
-	CreatedAt     string `json:"createdAt"`
-	AppliedAt     string `json:"appliedAt"`
-	ApplyResult   string `json:"applyResult"`
 }
 
 type ConfigBundle struct {
-	Version            int            `json:"version"`
-	ExportedAt         string         `json:"exportedAt"`
-	IncludeSensitive   bool           `json:"includeSensitive"`
-	Servers            []ServerBundle `json:"servers"`
-	Versions           []FRPCVersion  `json:"versions,omitempty"`
-	GithubProxy        string         `json:"githubProxy,omitempty"`
-	LogAutoRefresh     bool           `json:"logAutoRefresh"`
-	LogRefreshInterval int            `json:"logRefreshInterval"`
+	Version          int            `json:"version"`
+	ExportedAt       string         `json:"exportedAt"`
+	IncludeSensitive bool           `json:"includeSensitive"`
+	Servers          []ServerBundle `json:"servers"`
+	Versions         []FRPCVersion  `json:"versions,omitempty"`
+	GithubProxy      string         `json:"githubProxy,omitempty"`
+	// 旧版本导出文件包含日志刷新设置；保留字段以便旧备份仍可导入，值会被忽略。
+	LogAutoRefresh     bool `json:"logAutoRefresh,omitempty"`
+	LogRefreshInterval int  `json:"logRefreshInterval,omitempty"`
 }
 
 type ServerBundle struct {

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sccens/frpc-web/internal/app"
 )
@@ -42,12 +42,9 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("POST /api/auth/bootstrap", api.bootstrap)
 	mux.HandleFunc("POST /api/auth/login", api.login)
 	mux.HandleFunc("POST /api/auth/logout", api.logout)
-	mux.HandleFunc("GET /api/auth/me", api.me)
-	mux.HandleFunc("GET /api/auth/sessions", api.sessions)
-	mux.HandleFunc("DELETE /api/auth/sessions/{id}", api.revokeSession)
-	mux.HandleFunc("POST /api/auth/sessions/revoke-others", api.revokeOtherSessions)
 	mux.HandleFunc("POST /api/auth/access-key", api.changeAccessKey)
 	mux.HandleFunc("GET /api/audit-logs", api.auditLogs)
+	mux.HandleFunc("DELETE /api/audit-logs", api.clearAuditLogs)
 	mux.HandleFunc("GET /api/dashboard", api.dashboard)
 	mux.HandleFunc("GET /api/stats", api.stats)
 	mux.HandleFunc("GET /api/settings", api.settings)
@@ -101,9 +98,8 @@ func (h apiHandler) authStatus(w http.ResponseWriter, r *http.Request) {
 		writeResult(w, status, err)
 		return
 	}
-	if user, err := userFromRequest(r, h.service); err == nil {
+	if _, err := sessionFromRequest(r, h.service); err == nil {
 		status.Authenticated = true
-		status.User = &user
 	}
 	writeJSON(w, http.StatusOK, status)
 }
@@ -123,17 +119,13 @@ func (h apiHandler) bootstrap(w http.ResponseWriter, r *http.Request) {
 	session, err := h.service.Bootstrap(r.Context(), input, meta)
 	if err != nil {
 		h.limiter.Fail(ip)
-		h.auditAuth(r, "owner", "owner", "admin", "auth.bootstrap", "failure", err.Error())
+		h.auditAuth(r, "auth.bootstrap", "failure", err.Error())
 		writeResult(w, session, err)
 		return
 	}
-	if err := writeSessionCookie(w, r, h.service, session); err != nil {
-		h.auditAuth(r, session.User.ID, session.User.Username, session.User.Role, "auth.bootstrap", "failure", err.Error())
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
+	writeSessionCookie(w, r, session, h.trustProxyHeaders)
 	h.limiter.Reset(ip)
-	h.auditAuth(r, session.User.ID, session.User.Username, session.User.Role, "auth.bootstrap", "success", "")
+	h.auditAuth(r, "auth.bootstrap", "success", "")
 	writeJSON(w, http.StatusCreated, session)
 }
 
@@ -152,80 +144,23 @@ func (h apiHandler) login(w http.ResponseWriter, r *http.Request) {
 	session, err := h.service.Login(r.Context(), input, meta)
 	if err != nil {
 		h.limiter.Fail(ip)
-		h.auditAuth(r, "owner", "owner", "admin", "auth.login", "failure", err.Error())
+		h.auditAuth(r, "auth.login", "failure", err.Error())
 		writeResult(w, session, err)
 		return
 	}
-	if err := writeSessionCookie(w, r, h.service, session); err != nil {
-		h.auditAuth(r, session.User.ID, session.User.Username, session.User.Role, "auth.login", "failure", err.Error())
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
+	writeSessionCookie(w, r, session, h.trustProxyHeaders)
 	h.limiter.Reset(ip)
-	h.auditAuth(r, session.User.ID, session.User.Username, session.User.Role, "auth.login", "success", "")
+	h.auditAuth(r, "auth.login", "success", "")
 	writeJSON(w, http.StatusOK, session)
 }
 
 func (h apiHandler) logout(w http.ResponseWriter, r *http.Request) {
-	if user, session, err := authSessionFromRequest(r, h.service); err == nil {
+	if session, err := sessionFromRequest(r, h.service); err == nil {
 		_ = h.service.RevokeCurrentSession(r.Context(), session.Token)
-		h.service.AddAudit(r.Context(), app.AuditLogInput{
-			UserID:       user.ID,
-			Username:     user.Username,
-			Role:         user.Role,
-			IP:           clientIP(r, h.trustProxyHeaders),
-			UserAgent:    r.UserAgent(),
-			Action:       "auth.logout",
-			ResourceType: "session",
-			Result:       "success",
-		})
+		h.auditAuth(r, "auth.logout", "success", "")
 	}
 	clearSessionCookie(w)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-func (h apiHandler) me(w http.ResponseWriter, r *http.Request) {
-	user, ok := userFromContext(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	writeJSON(w, http.StatusOK, user)
-}
-
-func (h apiHandler) sessions(w http.ResponseWriter, r *http.Request) {
-	sessionID, err := sessionIDFromRequest(r, h.service)
-	if err != nil {
-		writeResult(w, []app.Session{}, err)
-		return
-	}
-	payload, err := h.service.Sessions(r.Context(), sessionID)
-	writeResult(w, payload, err)
-}
-
-func (h apiHandler) revokeSession(w http.ResponseWriter, r *http.Request) {
-	currentSessionID, _ := sessionIDFromRequest(r, h.service)
-	err := h.service.RevokeSession(r.Context(), r.PathValue("id"))
-	if err == nil {
-		sessions, _ := h.service.Sessions(r.Context(), currentSessionID)
-		for _, session := range sessions {
-			if session.ID == r.PathValue("id") && session.Current {
-				clearSessionCookie(w)
-				break
-			}
-		}
-	}
-	writeResult(w, map[string]bool{"ok": true}, err)
-}
-
-func (h apiHandler) revokeOtherSessions(w http.ResponseWriter, r *http.Request) {
-	sessionID, err := sessionIDFromRequest(r, h.service)
-	if err != nil {
-		writeResult(w, map[string]bool{"ok": false}, err)
-		return
-	}
-	err = h.service.RevokeOtherSessions(r.Context(), sessionID)
-	writeResult(w, map[string]bool{"ok": true}, err)
 }
 
 func (h apiHandler) changeAccessKey(w http.ResponseWriter, r *http.Request) {
@@ -245,11 +180,15 @@ func (h apiHandler) auditLogs(w http.ResponseWriter, r *http.Request) {
 		Page:     queryInt(r, "page", 1),
 		PageSize: queryInt(r, "pageSize", 50),
 		Action:   r.URL.Query().Get("action"),
-		User:     r.URL.Query().Get("user"),
 		Result:   r.URL.Query().Get("result"),
 	}
 	payload, err := h.service.AuditLogs(r.Context(), query)
 	writeResult(w, payload, err)
+}
+
+func (h apiHandler) clearAuditLogs(w http.ResponseWriter, r *http.Request) {
+	err := h.service.ClearAuditLogs(r.Context())
+	writeResult(w, map[string]bool{"ok": true}, err)
 }
 
 func (h apiHandler) dashboard(w http.ResponseWriter, r *http.Request) {
@@ -277,8 +216,7 @@ func (h apiHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h apiHandler) exportConfig(w http.ResponseWriter, r *http.Request) {
-	includeSensitive := parseBoolQuery(r.URL.Query().Get("includeSensitive"))
-	payload, err := h.service.ExportConfig(r.Context(), includeSensitive)
+	payload, err := h.service.ExportConfig(r.Context())
 	if err != nil {
 		writeResult(w, payload, err)
 		return
@@ -426,7 +364,7 @@ func (h apiHandler) installOnline(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h apiHandler) installOffline(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(256 << 20); err != nil {
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("parse multipart form failed: %v", err))
 		return
 	}
@@ -440,11 +378,8 @@ func (h apiHandler) installOffline(w http.ResponseWriter, r *http.Request) {
 	writeResultStatus(w, http.StatusCreated, payload, err)
 }
 
-func (h apiHandler) auditAuth(r *http.Request, userID, username, role, action, result, errorText string) {
+func (h apiHandler) auditAuth(r *http.Request, action, result, errorText string) {
 	h.service.AddAudit(r.Context(), app.AuditLogInput{
-		UserID:       strings.TrimSpace(userID),
-		Username:     strings.TrimSpace(username),
-		Role:         strings.TrimSpace(role),
 		IP:           clientIP(r, h.trustProxyHeaders),
 		UserAgent:    r.UserAgent(),
 		Action:       action,
@@ -454,7 +389,11 @@ func (h apiHandler) auditAuth(r *http.Request, userID, username, role, action, r
 	})
 }
 
+// maxJSONBody 限制 JSON 请求体大小，防止异常大的请求耗尽内存。
+const maxJSONBody = 1 << 20 // 1MB
+
 func decodeJSON(w http.ResponseWriter, r *http.Request, dest any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
 	defer r.Body.Close()
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -478,7 +417,7 @@ func writeResultStatus(w http.ResponseWriter, okStatus int, payload any, err err
 			status = http.StatusUnauthorized
 		} else if errors.Is(err, app.ErrAlreadyBootstrapped) {
 			status = http.StatusConflict
-		} else if errors.Is(err, sql.ErrNoRows) {
+		} else if errors.Is(err, app.ErrNotFound) {
 			status = http.StatusNotFound
 		}
 		writeError(w, status, err.Error())
@@ -497,15 +436,6 @@ func queryInt(r *http.Request, key string, fallback int) int {
 		return fallback
 	}
 	return parsed
-}
-
-func parseBoolQuery(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
 }
 
 func writeAction(w http.ResponseWriter, result app.ActionResult) {
@@ -612,7 +542,13 @@ func serveIndexFromFS(w http.ResponseWriter, r *http.Request, webFS http.FileSys
 
 func loggingMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
-		logger.Info("request", "method", r.Method, "path", r.URL.Path)
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+		status := rec.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		logger.Info("request", "method", r.Method, "path", r.URL.Path, "status", status, "duration", time.Since(start).Round(time.Millisecond))
 	})
 }

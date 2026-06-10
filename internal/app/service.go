@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -23,11 +23,8 @@ type Store interface {
 	SetSetting(ctx context.Context, key, value string) error
 	CreateSession(ctx context.Context, session Session) (Session, error)
 	GetSessionByHash(ctx context.Context, idHash string) (Session, error)
-	ListSessions(ctx context.Context) ([]Session, error)
 	TouchSession(ctx context.Context, idHash string) error
-	RevokeSession(ctx context.Context, id string) error
 	RevokeSessionByHash(ctx context.Context, idHash string) error
-	RevokeOtherSessions(ctx context.Context, idHash string) error
 	RevokeAllSessions(ctx context.Context) error
 	ListServers(ctx context.Context) ([]Server, error)
 	GetServer(ctx context.Context, id string) (Server, error)
@@ -49,11 +46,11 @@ type Store interface {
 	UpsertProcess(ctx context.Context, info ProcessInfo) error
 	GetProcess(ctx context.Context, serverID string) (ProcessInfo, error)
 	DeleteProcess(ctx context.Context, serverID string) error
-	AddConfigVersion(ctx context.Context, version ConfigVersion) error
 	ListHealth(ctx context.Context) ([]HealthEvent, error)
 	AddHealth(ctx context.Context, serverID, level, message string) error
 	AddAudit(ctx context.Context, input AuditLogInput) error
 	ListAuditLogs(ctx context.Context, query AuditLogQuery) (AuditLogPage, error)
+	ClearAuditLogs(ctx context.Context) error
 }
 
 type Runtime interface {
@@ -77,9 +74,8 @@ var (
 	ErrInvalidInput        = errors.New("invalid input")
 	ErrInvalidCredentials  = errors.New("invalid access key")
 	ErrUnauthorized        = errors.New("unauthorized")
+	ErrNotFound            = errors.New("resource not found")
 )
-
-const RoleAdmin = "admin"
 
 type Options struct {
 	Store   Store
@@ -198,84 +194,57 @@ func (s *Service) AuthStatus(ctx context.Context) (AuthStatus, error) {
 	return AuthStatus{Bootstrapped: s.accessKeyConfigured(ctx)}, nil
 }
 
-func (s *Service) Bootstrap(ctx context.Context, input AuthInput, meta AuthMeta) (AuthSession, error) {
+func (s *Service) Bootstrap(ctx context.Context, input AuthInput, meta AuthMeta) (Session, error) {
 	if s.accessKeyConfigured(ctx) {
-		return AuthSession{}, ErrAlreadyBootstrapped
+		return Session{}, ErrAlreadyBootstrapped
 	}
 	accessKey, err := normalizeAccessKey(input.AccessKey)
 	if err != nil {
-		return AuthSession{}, invalidInput(err)
+		return Session{}, invalidInput(err)
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(accessKey), bcrypt.DefaultCost)
 	if err != nil {
-		return AuthSession{}, err
+		return Session{}, err
 	}
 	if err := s.store.SetSetting(ctx, "access_key_hash", string(hash)); err != nil {
-		return AuthSession{}, err
+		return Session{}, err
 	}
 	return s.newSession(ctx, meta)
 }
 
-func (s *Service) Login(ctx context.Context, input AuthInput, meta AuthMeta) (AuthSession, error) {
+func (s *Service) Login(ctx context.Context, input AuthInput, meta AuthMeta) (Session, error) {
 	accessKey, err := normalizeAccessKey(input.AccessKey)
 	if err != nil {
-		return AuthSession{}, ErrInvalidCredentials
+		return Session{}, ErrInvalidCredentials
 	}
 	if !s.accessKeyConfigured(ctx) {
-		return AuthSession{}, ErrBootstrapRequired
+		return Session{}, ErrBootstrapRequired
 	}
 	if err := s.verifyAccessKey(ctx, accessKey); err != nil {
-		return AuthSession{}, ErrInvalidCredentials
+		return Session{}, ErrInvalidCredentials
 	}
 	return s.newSession(ctx, meta)
 }
 
-func (s *Service) User(ctx context.Context, id string) (User, error) {
-	if id != "" && id != ownerUser().ID {
-		return User{}, ErrUnauthorized
-	}
-	return ownerUser(), nil
-}
-
-func (s *Service) VerifySession(ctx context.Context, sessionID string) (User, Session, error) {
+func (s *Service) VerifySession(ctx context.Context, sessionID string) (Session, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return User{}, Session{}, ErrUnauthorized
+		return Session{}, ErrUnauthorized
 	}
 	session, err := s.store.GetSessionByHash(ctx, hashSessionID(sessionID))
 	if err != nil {
-		return User{}, Session{}, ErrUnauthorized
+		return Session{}, ErrUnauthorized
 	}
-	if session.RevokedAt != "" || sessionExpired(session.ExpiresAt) {
-		return User{}, Session{}, ErrUnauthorized
+	if sessionExpired(session.ExpiresAt) {
+		return Session{}, ErrUnauthorized
 	}
 	_ = s.store.TouchSession(ctx, session.IDHash)
 	session.Token = sessionID
-	return ownerUser(), session, nil
-}
-
-func (s *Service) Sessions(ctx context.Context, currentSessionID string) ([]Session, error) {
-	sessions, err := s.store.ListSessions(ctx)
-	if err != nil {
-		return nil, err
-	}
-	currentHash := hashSessionID(currentSessionID)
-	for i := range sessions {
-		sessions[i].Current = currentHash != "" && sessions[i].IDHash == currentHash
-	}
-	return sessions, nil
-}
-
-func (s *Service) RevokeSession(ctx context.Context, id string) error {
-	return s.store.RevokeSession(ctx, id)
+	return session, nil
 }
 
 func (s *Service) RevokeCurrentSession(ctx context.Context, sessionID string) error {
 	return s.store.RevokeSessionByHash(ctx, hashSessionID(sessionID))
-}
-
-func (s *Service) RevokeOtherSessions(ctx context.Context, currentSessionID string) error {
-	return s.store.RevokeOtherSessions(ctx, hashSessionID(currentSessionID))
 }
 
 func (s *Service) ChangeAccessKey(ctx context.Context, input AccessKeyInput) error {
@@ -307,9 +276,11 @@ func (s *Service) AuditLogs(ctx context.Context, query AuditLogQuery) (AuditLogP
 	return s.store.ListAuditLogs(ctx, query)
 }
 
+func (s *Service) ClearAuditLogs(ctx context.Context) error {
+	return s.store.ClearAuditLogs(ctx)
+}
+
 func (s *Service) AddAudit(ctx context.Context, input AuditLogInput) {
-	input.Username = strings.TrimSpace(input.Username)
-	input.Role = strings.TrimSpace(input.Role)
 	input.Action = strings.TrimSpace(input.Action)
 	input.ResourceType = strings.TrimSpace(input.ResourceType)
 	input.ResourceID = strings.TrimSpace(input.ResourceID)
@@ -364,72 +335,20 @@ func (s *Service) Dashboard(ctx context.Context) (Dashboard, error) {
 
 func (s *Service) Settings(ctx context.Context) (Settings, error) {
 	githubProxy, err := s.store.GetSetting(ctx, "github_proxy")
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil && !errors.Is(err, ErrNotFound) {
 		return Settings{}, err
 	}
-	autoRefresh, err := s.store.GetSetting(ctx, "log_auto_refresh")
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return Settings{}, err
-	}
-	intervalRaw, err := s.store.GetSetting(ctx, "log_refresh_interval")
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return Settings{}, err
-	}
-
-	settings := Settings{
-		Addr:               s.addr,
-		DataDir:            s.store.DataDir(),
-		AuthNotice:         authNotice(s.addr),
-		GithubProxy:        strings.TrimSpace(githubProxy),
-		LogAutoRefresh:     parseBoolSetting(autoRefresh, false),
-		LogRefreshInterval: parseIntSetting(intervalRaw, 5),
-	}
-	if settings.LogRefreshInterval < 2 || settings.LogRefreshInterval > 60 {
-		settings.LogRefreshInterval = 5
-	}
-	return settings, nil
+	return Settings{
+		Addr:        s.addr,
+		GithubProxy: strings.TrimSpace(githubProxy),
+	}, nil
 }
 
 func (s *Service) UpdateSettings(ctx context.Context, input SettingsInput) (Settings, error) {
-	input.GithubProxy = strings.TrimSpace(input.GithubProxy)
-	if input.LogRefreshInterval == 0 {
-		input.LogRefreshInterval = 5
-	}
-	if input.LogRefreshInterval < 2 || input.LogRefreshInterval > 60 {
-		return Settings{}, invalidInput(errors.New("log refresh interval must be between 2 and 60 seconds"))
-	}
-	if err := s.store.SetSetting(ctx, "github_proxy", input.GithubProxy); err != nil {
-		return Settings{}, err
-	}
-	if err := s.store.SetSetting(ctx, "log_auto_refresh", boolSetting(input.LogAutoRefresh)); err != nil {
-		return Settings{}, err
-	}
-	if err := s.store.SetSetting(ctx, "log_refresh_interval", fmt.Sprintf("%d", input.LogRefreshInterval)); err != nil {
+	if err := s.store.SetSetting(ctx, "github_proxy", strings.TrimSpace(input.GithubProxy)); err != nil {
 		return Settings{}, err
 	}
 	return s.Settings(ctx)
-}
-
-func (s *Service) JWTSecret(ctx context.Context) ([]byte, error) {
-	if secret := strings.TrimSpace(os.Getenv("FRPC_WEB_JWT_SECRET")); secret != "" {
-		return []byte(secret), nil
-	}
-	stored, err := s.store.GetSetting(ctx, "jwt_secret")
-	if err == nil && strings.TrimSpace(stored) != "" {
-		return []byte(stored), nil
-	}
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
-	}
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return nil, err
-	}
-	secret := hex.EncodeToString(b[:])
-	if err := s.store.SetSetting(ctx, "jwt_secret", secret); err != nil {
-		return nil, err
-	}
-	return []byte(secret), nil
 }
 
 func (s *Service) Servers(ctx context.Context) ([]Server, error) {
@@ -460,7 +379,7 @@ func (s *Service) CreateServer(ctx context.Context, input ServerInput) (Server, 
 	if err != nil {
 		return Server{}, err
 	}
-	_, _ = s.ApplyConfig(ctx, server.ID, "server created")
+	_, _ = s.applyConfig(ctx, server.ID)
 	return s.Server(ctx, server.ID)
 }
 
@@ -482,9 +401,6 @@ func (s *Service) UpdateServer(ctx context.Context, id string, input ServerInput
 	if input.AdminPort == 0 {
 		input.AdminPort = current.AdminPort
 	}
-	if input.FRPCVersionID == "" {
-		input.FRPCVersionID = current.FRPCVersionID
-	}
 	if err := validateServer(input); err != nil {
 		return Server{}, invalidInput(err)
 	}
@@ -492,7 +408,7 @@ func (s *Service) UpdateServer(ctx context.Context, id string, input ServerInput
 	if err != nil {
 		return Server{}, err
 	}
-	_, _ = s.ApplyConfig(ctx, server.ID, "server updated")
+	_, _ = s.applyConfig(ctx, server.ID)
 	return s.Server(ctx, server.ID)
 }
 
@@ -519,25 +435,23 @@ func (s *Service) Rules(ctx context.Context, serverID string) ([]ProxyRule, erro
 }
 
 func (s *Service) CreateRule(ctx context.Context, serverID string, input ProxyRuleInput) (ProxyRule, error) {
-	server, err := s.store.GetServer(ctx, serverID)
-	if err != nil {
+	if _, err := s.store.GetServer(ctx, serverID); err != nil {
 		return ProxyRule{}, err
 	}
 	input = normalizeRuleDefaults(input)
-	if err := validateRuleForServer(server, input); err != nil {
+	if err := validateRule(input); err != nil {
 		return ProxyRule{}, invalidInput(err)
 	}
 	rule, err := s.store.CreateRule(ctx, serverID, input)
 	if err != nil {
 		return ProxyRule{}, err
 	}
-	_ = s.syncProxyConfig(ctx, serverID, "rule created")
+	_ = s.syncProxyConfig(ctx, serverID)
 	return maskRuleSecret(rule), nil
 }
 
 func (s *Service) UpdateRule(ctx context.Context, serverID, ruleID string, input ProxyRuleInput) (ProxyRule, error) {
-	server, err := s.store.GetServer(ctx, serverID)
-	if err != nil {
+	if _, err := s.store.GetServer(ctx, serverID); err != nil {
 		return ProxyRule{}, err
 	}
 	current, err := s.store.GetRule(ctx, serverID, ruleID)
@@ -551,14 +465,14 @@ func (s *Service) UpdateRule(ctx context.Context, serverID, ruleID string, input
 	if input.HTTPPassword == "" || looksMaskedSecret(input.HTTPPassword) {
 		input.HTTPPassword = current.HTTPPassword
 	}
-	if err := validateRuleForServer(server, input); err != nil {
+	if err := validateRule(input); err != nil {
 		return ProxyRule{}, invalidInput(err)
 	}
 	rule, err := s.store.UpdateRule(ctx, serverID, ruleID, input)
 	if err != nil {
 		return ProxyRule{}, err
 	}
-	_ = s.syncProxyConfig(ctx, serverID, "rule updated")
+	_ = s.syncProxyConfig(ctx, serverID)
 	return maskRuleSecret(rule), nil
 }
 
@@ -566,7 +480,7 @@ func (s *Service) DeleteRule(ctx context.Context, serverID, ruleID string) error
 	if err := s.store.DeleteRule(ctx, serverID, ruleID); err != nil {
 		return err
 	}
-	_ = s.syncProxyConfig(ctx, serverID, "rule deleted")
+	_ = s.syncProxyConfig(ctx, serverID)
 	return nil
 }
 
@@ -585,11 +499,11 @@ func (s *Service) start(ctx context.Context, serverID string, resetAttemptsOnSuc
 	}
 	_ = s.store.DeleteProcess(ctx, serverID)
 
-	version, result := s.versionForServer(ctx, server)
+	version, result := s.requireActiveVersion(ctx)
 	if !result.OK {
 		return result
 	}
-	if _, err := s.ApplyConfig(ctx, serverID, "start"); err != nil {
+	if _, err := s.applyConfig(ctx, serverID); err != nil {
 		return errorResult(err)
 	}
 	check := s.runtime.CheckConfig(ctx, server, version)
@@ -650,11 +564,11 @@ func (s *Service) Reload(ctx context.Context, serverID string) ActionResult {
 	if server.RestartRequired {
 		return ActionResult{OK: false, Message: "公共配置已变更，需要重启后生效"}
 	}
-	version, result := s.versionForServer(ctx, server)
+	version, result := s.requireActiveVersion(ctx)
 	if !result.OK {
 		return result
 	}
-	if _, err := s.ApplyConfig(ctx, serverID, "reload"); err != nil {
+	if _, err := s.applyConfig(ctx, serverID); err != nil {
 		return errorResult(err)
 	}
 	check := s.runtime.CheckConfig(ctx, server, version)
@@ -676,11 +590,11 @@ func (s *Service) Check(ctx context.Context, serverID string) ActionResult {
 	if err != nil {
 		return errorResult(err)
 	}
-	version, result := s.versionForServer(ctx, server)
+	version, result := s.requireActiveVersion(ctx)
 	if !result.OK {
 		return result
 	}
-	if _, err := s.ApplyConfig(ctx, serverID, "check"); err != nil {
+	if _, err := s.applyConfig(ctx, serverID); err != nil {
 		return errorResult(err)
 	}
 	return s.runtime.CheckConfig(ctx, server, version)
@@ -694,24 +608,13 @@ func (s *Service) ConfigPreview(ctx context.Context, serverID string) (ConfigPre
 	return s.runtime.RenderConfig(ctx, server)
 }
 
-func (s *Service) ApplyConfig(ctx context.Context, serverID string, summary string) (ConfigPreview, error) {
+// applyConfig 重新渲染 frpc.toml 并落盘，使数据库中的配置生效到文件系统。
+func (s *Service) applyConfig(ctx context.Context, serverID string) (ConfigPreview, error) {
 	server, err := s.store.GetServer(ctx, serverID)
 	if err != nil {
 		return ConfigPreview{}, err
 	}
-	preview, err := s.runtime.RenderConfig(ctx, server)
-	if err != nil {
-		return ConfigPreview{}, err
-	}
-	sum := sha256.Sum256([]byte(preview.Content))
-	_ = s.store.AddConfigVersion(ctx, ConfigVersion{
-		ServerID:      serverID,
-		TOMLSnapshot:  preview.Content,
-		ChangeSummary: summary,
-		Checksum:      fmt.Sprintf("%x", sum[:]),
-		ApplyResult:   "rendered",
-	})
-	return preview, nil
+	return s.runtime.RenderConfig(ctx, server)
 }
 
 func (s *Service) Logs(ctx context.Context, serverID string, tail int) ([]LogLine, error) {
@@ -781,7 +684,9 @@ func (s *Service) InstallOffline(ctx context.Context, filename string, file io.R
 	return s.store.AddVersion(ctx, version)
 }
 
-func (s *Service) ExportConfig(ctx context.Context, includeSensitive bool) (ConfigBundle, error) {
+// ExportConfig 导出完整配置备份（含敏感字段）。备份文件由用户自行保管，
+// 不做脱敏——脱敏后的备份无法完整恢复。
+func (s *Service) ExportConfig(ctx context.Context) (ConfigBundle, error) {
 	settings, err := s.Settings(ctx)
 	if err != nil {
 		return ConfigBundle{}, err
@@ -795,19 +700,14 @@ func (s *Service) ExportConfig(ctx context.Context, includeSensitive bool) (Conf
 		return ConfigBundle{}, err
 	}
 	bundle := ConfigBundle{
-		Version:            1,
-		ExportedAt:         time.Now().Format(time.RFC3339),
-		IncludeSensitive:   includeSensitive,
-		GithubProxy:        settings.GithubProxy,
-		LogAutoRefresh:     settings.LogAutoRefresh,
-		LogRefreshInterval: settings.LogRefreshInterval,
-		Versions:           versions,
-		Servers:            make([]ServerBundle, 0, len(servers)),
+		Version:          1,
+		ExportedAt:       time.Now().Format(time.RFC3339),
+		IncludeSensitive: true,
+		GithubProxy:      settings.GithubProxy,
+		Versions:         versions,
+		Servers:          make([]ServerBundle, 0, len(servers)),
 	}
 	for _, server := range servers {
-		if !includeSensitive {
-			server = maskServerSecrets(server)
-		}
 		bundle.Servers = append(bundle.Servers, ServerBundle{
 			Server: server,
 			Rules:  server.Rules,
@@ -838,11 +738,7 @@ func (s *Service) ImportConfig(ctx context.Context, input ConfigImportInput) (Ac
 			}
 		}
 	}
-	if err := s.UpdateSettingsOnly(ctx, SettingsInput{
-		GithubProxy:        input.Bundle.GithubProxy,
-		LogAutoRefresh:     input.Bundle.LogAutoRefresh,
-		LogRefreshInterval: input.Bundle.LogRefreshInterval,
-	}); err != nil {
+	if err := s.store.SetSetting(ctx, "github_proxy", strings.TrimSpace(input.Bundle.GithubProxy)); err != nil {
 		return ActionResult{}, err
 	}
 	for _, version := range input.Bundle.Versions {
@@ -865,7 +761,7 @@ func (s *Service) ImportConfig(ctx context.Context, input ConfigImportInput) (Ac
 		createdServers++
 		for _, rule := range item.Rules {
 			ruleInput := importRuleInput(rule)
-			if err := validateRuleForServer(server, ruleInput); err != nil {
+			if err := validateRule(ruleInput); err != nil {
 				return ActionResult{}, invalidInput(fmt.Errorf("rule %q: %w", rule.Name, err))
 			}
 			if _, err := s.store.CreateRule(ctx, server.ID, ruleInput); err != nil {
@@ -873,28 +769,12 @@ func (s *Service) ImportConfig(ctx context.Context, input ConfigImportInput) (Ac
 			}
 			createdRules++
 		}
-		_, _ = s.ApplyConfig(ctx, server.ID, "config imported")
+		_, _ = s.applyConfig(ctx, server.ID)
 	}
 	return ActionResult{
 		OK:      true,
 		Message: fmt.Sprintf("导入完成：%d 个服务器，%d 条规则", createdServers, createdRules),
 	}, nil
-}
-
-func (s *Service) UpdateSettingsOnly(ctx context.Context, input SettingsInput) error {
-	if input.LogRefreshInterval == 0 {
-		input.LogRefreshInterval = 5
-	}
-	if input.LogRefreshInterval < 2 || input.LogRefreshInterval > 60 {
-		input.LogRefreshInterval = 5
-	}
-	if err := s.store.SetSetting(ctx, "github_proxy", strings.TrimSpace(input.GithubProxy)); err != nil {
-		return err
-	}
-	if err := s.store.SetSetting(ctx, "log_auto_refresh", boolSetting(input.LogAutoRefresh)); err != nil {
-		return err
-	}
-	return s.store.SetSetting(ctx, "log_refresh_interval", fmt.Sprintf("%d", input.LogRefreshInterval))
 }
 
 func (s *Service) CurrentVersion(ctx context.Context) FRPCVersion {
@@ -913,15 +793,39 @@ func (s *Service) Stats(ctx context.Context) (Stats, error) {
 		Errors:    []StatsError{},
 		SampledAt: sampledAt,
 	}
-	for _, server := range servers {
-		publicServer := s.withRuntimeFields(ctx, server)
+
+	publicServers := make([]Server, len(servers))
+	for i := range servers {
+		publicServers[i] = s.withRuntimeFields(ctx, servers[i])
+	}
+
+	// 并发拉取各运行实例的 Admin API，避免多节点时串行等待。
+	type adminResult struct {
+		status AdminStatus
+		err    error
+	}
+	adminResults := make([]adminResult, len(servers))
+	var wg sync.WaitGroup
+	for i := range servers {
+		if !isRunningState(publicServers[i].Status) {
+			continue
+		}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			status, err := s.runtime.AdminStatus(ctx, servers[i])
+			adminResults[i] = adminResult{status: status, err: err}
+		}(i)
+	}
+	wg.Wait()
+
+	for i, server := range servers {
+		publicServer := publicServers[i]
 		item := ServerStats{
 			ServerID:   publicServer.ID,
 			Name:       publicServer.Name,
 			Status:     publicServer.Status,
-			AdminAddr:  "127.0.0.1",
 			AdminPort:  publicServer.AdminPort,
-			ConfigMode: publicServer.ConfigMode,
 			ProxyCount: publicServer.ProxyCount,
 			SampledAt:  sampledAt,
 		}
@@ -929,7 +833,7 @@ func (s *Service) Stats(ctx context.Context) (Stats, error) {
 		stats.Summary.ProxyRules += publicServer.ProxyCount
 		if isRunningState(publicServer.Status) {
 			stats.Summary.RunningServers++
-			adminStatus, err := s.runtime.AdminStatus(ctx, server)
+			adminStatus, err := adminResults[i].status, adminResults[i].err
 			if err != nil {
 				item.Error = err.Error()
 				stats.Errors = append(stats.Errors, StatsError{ServerID: server.ID, ServerName: server.Name, Message: err.Error()})
@@ -986,26 +890,21 @@ func (s *Service) currentVersion(ctx context.Context) FRPCVersion {
 	return FRPCVersion{Installed: false, Version: "-", Latest: "-", Path: ""}
 }
 
-func (s *Service) versionForServer(ctx context.Context, server Server) (FRPCVersion, ActionResult) {
-	var version FRPCVersion
-	var err error
-	if server.FRPCVersionID != "" {
-		version, err = s.store.GetVersion(ctx, server.FRPCVersionID)
-	} else {
-		version, err = s.store.ActiveVersion(ctx)
-	}
+// requireActiveVersion 返回当前激活的 frpc 版本，未安装时给出可操作的错误结果。
+func (s *Service) requireActiveVersion(ctx context.Context) (FRPCVersion, ActionResult) {
+	version, err := s.store.ActiveVersion(ctx)
 	if err != nil || !version.Installed || version.Path == "" {
 		return FRPCVersion{}, ActionResult{OK: false, Message: "frpc is not installed"}
 	}
 	return version, ActionResult{OK: true, Message: "frpc version selected"}
 }
 
-func (s *Service) syncProxyConfig(ctx context.Context, serverID string, summary string) ActionResult {
+func (s *Service) syncProxyConfig(ctx context.Context, serverID string) ActionResult {
 	server, err := s.store.GetServer(ctx, serverID)
 	if err != nil {
 		return errorResult(err)
 	}
-	if _, err := s.ApplyConfig(ctx, serverID, summary); err != nil {
+	if _, err := s.applyConfig(ctx, serverID); err != nil {
 		return errorResult(err)
 	}
 	if !isRunningState(server.Status) {
@@ -1072,20 +971,10 @@ func validateServer(input ServerInput) error {
 	default:
 		return errors.New("transport protocol must be tcp, kcp, quic, or websocket")
 	}
-	if input.ConfigMode != "" && input.ConfigMode != "toml_reload" && input.ConfigMode != "store_api" {
-		return errors.New("config mode must be toml_reload or store_api")
-	}
 	if input.MaxRestarts < 1 || input.MaxRestarts > 10 {
 		return errors.New("max restarts must be between 1 and 10")
 	}
 	return nil
-}
-
-func validateRuleForServer(server Server, input ProxyRuleInput) error {
-	if server.ConfigMode == "store_api" && (input.Type == "stcp" || input.Type == "xtcp") {
-		return errors.New("STCP/XTCP is not supported in experimental Store API mode; use TOML Reload")
-	}
-	return validateRule(input)
 }
 
 func validateRule(input ProxyRuleInput) error {
@@ -1118,7 +1007,7 @@ func validateRule(input ProxyRuleInput) error {
 			if !ok {
 				return errors.New("request header must be in 'Name: Value' format")
 			}
-			if !isValidHeaderName(strings.TrimSpace(name)) {
+			if !IsValidHeaderName(strings.TrimSpace(name)) {
 				return errors.New("request header name must contain only letters, digits, '-' or '_'")
 			}
 		}
@@ -1154,15 +1043,11 @@ func normalizeServerDefaults(input ServerInput) ServerInput {
 	input.ServerAddr = strings.TrimSpace(input.ServerAddr)
 	input.AuthToken = strings.TrimSpace(input.AuthToken)
 	input.TransportProtocol = strings.TrimSpace(input.TransportProtocol)
-	input.ConfigMode = strings.TrimSpace(input.ConfigMode)
 	if input.ServerPort == 0 {
 		input.ServerPort = 7000
 	}
 	if input.TransportProtocol == "" {
 		input.TransportProtocol = "tcp"
-	}
-	if input.ConfigMode == "" {
-		input.ConfigMode = "toml_reload"
 	}
 	if input.MaxRestarts <= 0 {
 		input.MaxRestarts = 3
@@ -1197,7 +1082,9 @@ func normalizeRuleDefaults(input ProxyRuleInput) ProxyRuleInput {
 	return input
 }
 
-func isValidHeaderName(name string) bool {
+// IsValidHeaderName reports whether name is a safe HTTP header token
+// (RFC 7230 token subset) that can be embedded into a TOML key without quoting.
+func IsValidHeaderName(name string) bool {
 	if name == "" {
 		return false
 	}
@@ -1220,17 +1107,6 @@ func cleanStringList(values []string) []string {
 		}
 	}
 	return out
-}
-
-func maskServerSecrets(server Server) Server {
-	if server.AuthToken != "" {
-		server.AuthToken = maskSecret(server.AuthToken)
-	}
-	if server.AdminPassword != "" {
-		server.AdminPassword = maskSecret(server.AdminPassword)
-	}
-	server.Rules = maskRuleSecrets(server.Rules)
-	return server
 }
 
 func maskRuleSecrets(rules []ProxyRule) []ProxyRule {
@@ -1267,14 +1143,12 @@ func importServerInput(server Server) ServerInput {
 		ServerPort:        server.ServerPort,
 		AuthToken:         server.AuthToken,
 		TransportProtocol: server.TransportProtocol,
-		ConfigMode:        server.ConfigMode,
 		AutoStart:         server.AutoStart,
 		AutoRestart:       server.AutoRestart,
 		MaxRestarts:       server.MaxRestarts,
 		AdminPort:         server.AdminPort,
 		AdminUser:         server.AdminUser,
 		AdminPassword:     server.AdminPassword,
-		FRPCVersionID:     server.FRPCVersionID,
 	}
 	if looksMaskedSecret(input.AuthToken) {
 		input.AuthToken = ""
@@ -1317,26 +1191,16 @@ func importRuleInput(rule ProxyRule) ProxyRuleInput {
 	return normalizeRuleDefaults(input)
 }
 
+// maskSecret 返回定长掩码，避免泄露密钥长度；保留首尾各 2 字符便于辨认。
 func maskSecret(value string) string {
-	if len(value) <= 4 {
+	if len(value) <= 8 {
 		return "****"
 	}
-	maskLen := len(value) - 4
-	if maskLen < 4 {
-		maskLen = 4
-	}
-	return value[:2] + strings.Repeat("*", maskLen) + value[len(value)-2:]
+	return value[:2] + "****" + value[len(value)-2:]
 }
 
 func looksMaskedSecret(value string) bool {
-	return strings.Contains(value, "****") || strings.Count(value, "*") >= 4
-}
-
-func authNotice(addr string) string {
-	if strings.HasPrefix(addr, "0.0.0.0:") || strings.HasPrefix(addr, "[::]:") || strings.HasPrefix(addr, ":") {
-		return "当前已启用登录认证；公网访问仍建议叠加 HTTPS 与反向代理访问控制"
-	}
-	return "默认仅本机访问，已启用登录认证"
+	return strings.Count(value, "*") >= 4
 }
 
 func durationText(startedAt string) string {
@@ -1347,9 +1211,6 @@ func durationText(startedAt string) string {
 	d := time.Since(started)
 	if d < time.Minute {
 		return d.Truncate(time.Second).String()
-	}
-	if d < time.Hour {
-		return d.Truncate(time.Minute).String()
 	}
 	return d.Truncate(time.Minute).String()
 }
@@ -1394,7 +1255,7 @@ func isRunningState(status string) bool {
 }
 
 func errorResult(err error) ActionResult {
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, ErrNotFound) {
 		return ActionResult{OK: false, Message: "resource not found"}
 	}
 	return ActionResult{OK: false, Message: err.Error()}
@@ -1402,18 +1263,6 @@ func errorResult(err error) ActionResult {
 
 func invalidInput(err error) error {
 	return fmt.Errorf("%w: %v", ErrInvalidInput, err)
-}
-
-func ownerUser() User {
-	now := time.Now().Format(time.RFC3339)
-	return User{
-		ID:        "owner",
-		Username:  "owner",
-		Role:      RoleAdmin,
-		Enabled:   true,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
 }
 
 func (s *Service) accessKeyConfigured(ctx context.Context) bool {
@@ -1433,7 +1282,7 @@ func (s *Service) verifyAccessKey(ctx context.Context, accessKey string) error {
 	}
 	stored, err := s.store.GetSetting(ctx, "access_key_hash")
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, ErrNotFound) {
 			return ErrBootstrapRequired
 		}
 		return err
@@ -1444,10 +1293,10 @@ func (s *Service) verifyAccessKey(ctx context.Context, accessKey string) error {
 	return nil
 }
 
-func (s *Service) newSession(ctx context.Context, meta AuthMeta) (AuthSession, error) {
+func (s *Service) newSession(ctx context.Context, meta AuthMeta) (Session, error) {
 	token, err := randomHex(32)
 	if err != nil {
-		return AuthSession{}, err
+		return Session{}, err
 	}
 	now := time.Now()
 	session := Session{
@@ -1461,10 +1310,10 @@ func (s *Service) newSession(ctx context.Context, meta AuthMeta) (AuthSession, e
 	}
 	session, err = s.store.CreateSession(ctx, session)
 	if err != nil {
-		return AuthSession{}, err
+		return Session{}, err
 	}
 	session.Token = token
-	return AuthSession{User: ownerUser(), Session: session}, nil
+	return session, nil
 }
 
 func normalizeAccessKey(value string) (string, error) {
@@ -1498,14 +1347,7 @@ func sessionExpired(expiresAt string) bool {
 }
 
 func subtleEqual(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var v byte
-	for i := range a {
-		v |= a[i] ^ b[i]
-	}
-	return v == 0
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 func isProxyOnline(status string) bool {
@@ -1516,30 +1358,4 @@ func isProxyOnline(status string) bool {
 func isProxyError(status string) bool {
 	status = strings.ToLower(strings.TrimSpace(status))
 	return strings.Contains(status, "error") || strings.Contains(status, "fail") || strings.Contains(status, "closed")
-}
-
-func parseBoolSetting(value string, fallback bool) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return fallback
-	}
-}
-
-func boolSetting(value bool) string {
-	if value {
-		return "true"
-	}
-	return "false"
-}
-
-func parseIntSetting(value string, fallback int) int {
-	var n int
-	if _, err := fmt.Sscanf(strings.TrimSpace(value), "%d", &n); err != nil {
-		return fallback
-	}
-	return n
 }

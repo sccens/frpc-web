@@ -73,7 +73,6 @@ export interface Server {
   serverPort: number
   authToken?: string
   transportProtocol: string
-  configMode: 'toml_reload' | 'store_api'
   status: ServerStatus
   autoStart: boolean
   autoRestart: boolean
@@ -86,7 +85,6 @@ export interface Server {
   adminPort: number
   adminUser?: string
   adminPassword?: string
-  frpcVersionId: string
   rules?: ProxyRule[]
   createdAt?: string
   updatedAt?: string
@@ -98,14 +96,12 @@ export interface ServerInput {
   serverPort: number
   authToken: string
   transportProtocol: string
-  configMode: 'toml_reload' | 'store_api'
   autoStart: boolean
   autoRestart: boolean
   maxRestarts: number
   adminPort: number
   adminUser?: string
   adminPassword?: string
-  frpcVersionId: string
 }
 
 export interface HealthEvent {
@@ -133,52 +129,20 @@ export interface FrpcVersion {
 
 export interface Settings {
   addr: string
-  dataDir: string
-  authNotice: string
   githubProxy: string
-  logAutoRefresh: boolean
-  logRefreshInterval: number
 }
 
 export interface SettingsInput {
   githubProxy: string
-  logAutoRefresh: boolean
-  logRefreshInterval: number
-}
-
-export interface User {
-  id: string
-  username: string
-  role: 'admin'
-  enabled: boolean
-  createdAt: string
-  updatedAt: string
 }
 
 export interface AuthStatus {
   bootstrapped: boolean
   authenticated: boolean
-  user?: User
 }
 
 export interface AuthInput {
   accessKey: string
-}
-
-export interface AuthSession {
-  user: User
-  session?: Session
-}
-
-export interface Session {
-  id: string
-  ip: string
-  userAgent: string
-  createdAt: string
-  lastAccessAt: string
-  expiresAt: string
-  revokedAt?: string
-  current?: boolean
 }
 
 export interface AccessKeyInput {
@@ -206,11 +170,6 @@ export interface ActionResult {
   output?: string
 }
 
-export interface ConfigPreview {
-  configPath: string
-  content: string
-}
-
 export interface ConfigBundle {
   version: number
   exportedAt: string
@@ -218,8 +177,6 @@ export interface ConfigBundle {
   servers: Array<{ server: Server; rules: ProxyRule[] }>
   versions?: FrpcVersion[]
   githubProxy?: string
-  logAutoRefresh: boolean
-  logRefreshInterval: number
 }
 
 export interface ConfigImportInput {
@@ -244,9 +201,6 @@ export interface LatestVersionResult {
 
 export interface AuditLog {
   id: string
-  userId: string
-  username: string
-  role: string
   ip: string
   userAgent: string
   action: string
@@ -268,7 +222,6 @@ export interface AuditLogQuery {
   page?: number
   pageSize?: number
   action?: string
-  user?: string
   result?: string
 }
 
@@ -287,9 +240,7 @@ export interface ServerStats {
   serverId: string
   name: string
   status: string
-  adminAddr: string
   adminPort: number
-  configMode: string
   proxyCount: number
   onlineProxies: number
   errorProxies: number
@@ -340,37 +291,17 @@ export async function getAuthStatus() {
 }
 
 export async function bootstrapAdmin(input: AuthInput) {
-  const { data } = await http.post<AuthSession>('/auth/bootstrap', input)
+  const { data } = await http.post<{ ip: string }>('/auth/bootstrap', input)
   return data
 }
 
 export async function login(input: AuthInput) {
-  const { data } = await http.post<AuthSession>('/auth/login', input)
+  const { data } = await http.post<{ ip: string }>('/auth/login', input)
   return data
 }
 
 export async function logout() {
   const { data } = await http.post<{ ok: boolean }>('/auth/logout')
-  return data
-}
-
-export async function getMe() {
-  const { data } = await http.get<User>('/auth/me')
-  return data
-}
-
-export async function getSessions() {
-  const { data } = await http.get<Session[]>('/auth/sessions')
-  return data
-}
-
-export async function revokeSession(id: string) {
-  const { data } = await http.delete<{ ok: boolean }>(`/auth/sessions/${id}`)
-  return data
-}
-
-export async function revokeOtherSessions() {
-  const { data } = await http.post<{ ok: boolean }>('/auth/sessions/revoke-others')
   return data
 }
 
@@ -381,6 +312,11 @@ export async function changeAccessKey(input: AccessKeyInput) {
 
 export async function getAuditLogs(query: AuditLogQuery = {}) {
   const { data } = await http.get<AuditLogPage>('/audit-logs', { params: query })
+  return data
+}
+
+export async function clearAuditLogs() {
+  const { data } = await http.delete<{ ok: boolean }>('/audit-logs')
   return data
 }
 
@@ -404,10 +340,8 @@ export async function updateSettings(input: SettingsInput) {
   return data
 }
 
-export async function exportConfig(includeSensitive = false) {
-  const { data } = await http.get<ConfigBundle>('/config/export', {
-    params: { includeSensitive },
-  })
+export async function exportConfig() {
+  const { data } = await http.get<ConfigBundle>('/config/export')
   return data
 }
 
@@ -418,11 +352,6 @@ export async function importConfig(input: ConfigImportInput) {
 
 export async function getServers() {
   const { data } = await http.get<Server[]>('/servers')
-  return data
-}
-
-export async function getServer(id: string) {
-  const { data } = await http.get<Server>(`/servers/${id}`)
   return data
 }
 
@@ -466,11 +395,6 @@ export async function checkServer(id: string) {
   return data
 }
 
-export async function getServerRules(serverId: string) {
-  const { data } = await http.get<ProxyRule[]>(`/servers/${serverId}/rules`)
-  return data
-}
-
 export async function createRule(serverId: string, input: ProxyRuleInput) {
   const { data } = await http.post<ProxyRule>(`/servers/${serverId}/rules`, input)
   return data
@@ -490,11 +414,6 @@ export async function getServerLogs(serverId: string, tail = 200) {
   const { data } = await http.get<LogLine[]>(`/servers/${serverId}/logs`, {
     params: { tail },
   })
-  return data
-}
-
-export async function getConfigPreview(serverId: string) {
-  const { data } = await http.get<ConfigPreview>(`/servers/${serverId}/config/preview`)
   return data
 }
 

@@ -30,7 +30,6 @@ func TestRenderConfigTomlReloadAndFileMode(t *testing.T) {
 		AdminPort:     17400,
 		AdminUser:     "frpc-web",
 		AdminPassword: "admin-secret",
-		ConfigMode:    "toml_reload",
 		Rules: []app.ProxyRule{
 			{Name: "ssh", Type: "tcp", LocalIP: "127.0.0.1", LocalPort: 22, RemotePort: 6022, Enabled: true},
 			{
@@ -65,48 +64,6 @@ func TestRenderConfigTomlReloadAndFileMode(t *testing.T) {
 	}
 	if mode := mustMode(t, preview.ConfigPath); mode.Perm() != 0o600 {
 		t.Fatalf("config mode = %v, want 0600", mode.Perm())
-	}
-}
-
-func TestRenderConfigStoreModeWritesStoreFile(t *testing.T) {
-	rt := New(t.TempDir())
-	server := app.Server{
-		ID:         "srv-store",
-		ServerAddr: "frp.example.com",
-		ServerPort: 7000,
-		AdminPort:  17401,
-		ConfigMode: "store_api",
-		Rules: []app.ProxyRule{
-			{Name: "web", Type: "http", LocalIP: "127.0.0.1", LocalPort: 8080, CustomDomains: []string{"app.example.com"}, Enabled: true},
-		},
-	}
-
-	preview, err := rt.RenderConfig(context.Background(), server)
-	if err != nil {
-		t.Fatalf("render config: %v", err)
-	}
-	assertContains(t, preview.Content, `store.path = "`)
-	assertContains(t, preview.Content, `start = []`)
-	if strings.Contains(preview.Content, `[[proxies]]`) {
-		t.Fatalf("store mode should not render proxy blocks:\n%s", preview.Content)
-	}
-
-	storePath := filepath.Join(rt.dataDir, "servers", server.ID, "store", "store.json")
-	data, err := os.ReadFile(storePath)
-	if err != nil {
-		t.Fatalf("read store file: %v", err)
-	}
-	var payload struct {
-		Proxies []map[string]any `json:"proxies"`
-	}
-	if err := json.Unmarshal(data, &payload); err != nil {
-		t.Fatalf("parse store file: %v", err)
-	}
-	if len(payload.Proxies) != 1 || payload.Proxies[0]["name"] != "web" {
-		t.Fatalf("unexpected store payload: %s", data)
-	}
-	if mode := mustMode(t, storePath); mode.Perm() != 0o600 {
-		t.Fatalf("store file mode = %v, want 0600", mode.Perm())
 	}
 }
 
@@ -395,25 +352,10 @@ func TestHeaderPairsSortedAndFiltered(t *testing.T) {
 	}
 }
 
-func TestValidHeaderName(t *testing.T) {
-	cases := map[string]bool{
-		"X-Forwarded-For": true,
-		"X_Custom_1":      true,
-		"":                false,
-		"has space":       false,
-		"bad:colon":       false,
-	}
-	for name, want := range cases {
-		if got := validHeaderName(name); got != want {
-			t.Fatalf("validHeaderName(%q) = %v, want %v", name, got, want)
-		}
-	}
-}
-
 func TestRenderConfigRequestHeadersDeterministicAndSorted(t *testing.T) {
 	rt := New(t.TempDir())
 	server := app.Server{
-		ID: "srv-headers", ServerAddr: "frp.example.com", ServerPort: 7000, AdminPort: 17402, ConfigMode: "toml_reload",
+		ID: "srv-headers", ServerAddr: "frp.example.com", ServerPort: 7000, AdminPort: 17402,
 		Rules: []app.ProxyRule{{
 			Name: "web", Type: "http", LocalIP: "127.0.0.1", LocalPort: 8080,
 			CustomDomains: []string{"app.example.com"}, Enabled: true,

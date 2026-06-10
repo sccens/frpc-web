@@ -10,7 +10,6 @@ services:
       FRPC_WEB_DATA_DIR: /data
       FRPC_WEB_GITHUB_PROXY: ""
       FRPC_WEB_ACCESS_KEY: ""
-      FRPC_WEB_JWT_SECRET: ""
       FRPC_WEB_TRUSTED_PROXY: ""
     volumes:
       - frpc-web-data:/data

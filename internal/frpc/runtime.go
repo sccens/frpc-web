@@ -41,7 +41,7 @@ func New(dataDir string) *Runtime {
 	}
 	return &Runtime{
 		dataDir:     dataDir,
-		githubProxy: githubProxy(),
+		githubProxy: os.Getenv("FRPC_WEB_GITHUB_PROXY"),
 		cmds:        map[string]*exec.Cmd{},
 		stopping:    map[string]bool{},
 	}
@@ -54,22 +54,12 @@ func (r *Runtime) SetExitHandler(handler func(serverID string, err error)) {
 }
 
 func (r *Runtime) RenderConfig(_ context.Context, server app.Server) (app.ConfigPreview, error) {
-	serverDir := r.serverDir(server.ID)
-	configDir := filepath.Join(serverDir, "configs")
-	storePath := filepath.Join(serverDir, "store", "store.json")
+	configDir := filepath.Join(r.serverDir(server.ID), "configs")
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return app.ConfigPreview{}, err
 	}
-	if err := os.MkdirAll(filepath.Join(serverDir, "store"), 0o700); err != nil {
-		return app.ConfigPreview{}, err
-	}
-	if server.ConfigMode == "store_api" {
-		if err := writeStoreFile(storePath, server.Rules); err != nil {
-			return app.ConfigPreview{}, err
-		}
-	}
 
-	content := renderTOML(server, storePath)
+	content := renderTOML(server)
 	configPath := filepath.Join(configDir, "frpc.toml")
 	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
 		return app.ConfigPreview{}, err
@@ -174,15 +164,6 @@ func (r *Runtime) Stop(_ context.Context, server app.Server, process app.Process
 }
 
 func (r *Runtime) Reload(ctx context.Context, server app.Server, version app.FRPCVersion) app.ActionResult {
-	if server.ConfigMode == "store_api" {
-		if _, err := r.RenderConfig(ctx, server); err != nil {
-			return app.ActionResult{OK: false, Message: err.Error()}
-		}
-		if err := syncStoreAPI(ctx, server); err != nil {
-			return app.ActionResult{OK: false, Message: "frpc store sync failed", Output: err.Error()}
-		}
-		return app.ActionResult{OK: true, Message: "frpc store synced"}
-	}
 	if version.Path == "" {
 		return app.ActionResult{OK: false, Message: "frpc is not installed"}
 	}
@@ -224,7 +205,7 @@ func (r *Runtime) ProcessAlive(_ context.Context, pid int) bool {
 
 func (r *Runtime) InstallOnline(ctx context.Context, input app.FRPCInstallOnlineInput) (app.FRPCVersion, error) {
 	if input.Platform == "" {
-		input.Platform = "linux"
+		input.Platform = runtime.GOOS
 	}
 	if input.Arch == "" {
 		input.Arch = runtime.GOARCH
@@ -270,7 +251,7 @@ func (r *Runtime) InstallOnline(ctx context.Context, input app.FRPCInstallOnline
 func (r *Runtime) InstallOffline(_ context.Context, filename string, file io.Reader) (app.FRPCVersion, error) {
 	name := strings.ToLower(filename)
 	if strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".tgz") {
-		return r.installTarGZ(file, "offline-"+strconv.FormatInt(time.Now().Unix(), 10), "linux", runtime.GOARCH, "offline")
+		return r.installTarGZ(file, "offline-"+strconv.FormatInt(time.Now().Unix(), 10), runtime.GOOS, runtime.GOARCH, "offline")
 	}
 
 	tmpDir := filepath.Join(r.dataDir, "uploads")
@@ -300,7 +281,7 @@ func (r *Runtime) InstallOffline(_ context.Context, filename string, file io.Rea
 		return app.FRPCVersion{}, err
 	}
 	_ = os.Chmod(target, 0o700)
-	return app.FRPCVersion{Version: version, Platform: "linux", Arch: runtime.GOARCH, Path: target, Source: "offline", Installed: true}, nil
+	return app.FRPCVersion{Version: version, Platform: runtime.GOOS, Arch: runtime.GOARCH, Path: target, Source: "offline", Installed: true}, nil
 }
 
 func (r *Runtime) LatestVersion(ctx context.Context, githubProxy string) (string, error) {
@@ -398,7 +379,7 @@ func (r *Runtime) logPath(serverID string) string {
 	return filepath.Join(r.dataDir, "logs", serverID, "frpc.log")
 }
 
-func renderTOML(server app.Server, storePath string) string {
+func renderTOML(server app.Server) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "serverAddr = %q\n", server.ServerAddr)
 	fmt.Fprintf(&b, "serverPort = %d\n", server.ServerPort)
@@ -417,16 +398,11 @@ func renderTOML(server app.Server, storePath string) string {
 	if server.AdminPassword != "" && !strings.Contains(server.AdminPassword, "*") {
 		fmt.Fprintf(&b, "webServer.password = %q\n", server.AdminPassword)
 	}
-	if server.ConfigMode == "store_api" {
-		fmt.Fprintf(&b, "store.path = %q\n", storePath)
-		fmt.Fprintf(&b, "start = []\n")
-	} else {
-		for _, rule := range server.Rules {
-			if !rule.Enabled {
-				continue
-			}
-			writeRuleTOML(&b, rule)
+	for _, rule := range server.Rules {
+		if !rule.Enabled {
+			continue
 		}
+		writeRuleTOML(&b, rule)
 	}
 	return b.String()
 }
@@ -524,7 +500,7 @@ func headerPairs(values []string) []headerPair {
 		}
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
-		if !validHeaderName(key) {
+		if !app.IsValidHeaderName(key) {
 			continue
 		}
 		seen[key] = value
@@ -535,190 +511,6 @@ func headerPairs(values []string) []headerPair {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].key < out[j].key })
 	return out
-}
-
-// validHeaderName reports whether name is a safe HTTP header token
-// (RFC 7230 token subset) that can be embedded into a TOML key without quoting.
-func validHeaderName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for _, r := range name {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-func writeStoreFile(path string, rules []app.ProxyRule) error {
-	payload := map[string]any{
-		"proxies": storeFileProxies(rules),
-	}
-	data, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o600)
-}
-
-func storeFileProxies(rules []app.ProxyRule) []map[string]any {
-	proxies := make([]map[string]any, 0, len(rules))
-	for _, rule := range rules {
-		if !storeSupportedRule(rule) {
-			continue
-		}
-		proxies = append(proxies, ruleToStoreBlock(rule))
-	}
-	return proxies
-}
-
-func syncStoreAPI(ctx context.Context, server app.Server) error {
-	desired := map[string]map[string]any{}
-	for _, rule := range server.Rules {
-		if !storeSupportedRule(rule) {
-			continue
-		}
-		desired[rule.Name] = ruleToStoreDefinition(rule)
-	}
-
-	existing, err := listStoreProxyNames(ctx, server)
-	if err != nil {
-		return err
-	}
-	for name := range existing {
-		if _, ok := desired[name]; !ok {
-			if err := doStoreRequest(ctx, server, http.MethodDelete, "/api/store/proxies/"+urlPathEscape(name), nil); err != nil {
-				return err
-			}
-		}
-	}
-	for name, payload := range desired {
-		data, err := json.Marshal(payload)
-		if err != nil {
-			return err
-		}
-		method := http.MethodPost
-		path := "/api/store/proxies"
-		if existing[name] {
-			method = http.MethodPut
-			path = "/api/store/proxies/" + urlPathEscape(name)
-		}
-		if err := doStoreRequest(ctx, server, method, path, bytes.NewReader(data)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func listStoreProxyNames(ctx context.Context, server app.Server) (map[string]bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, adminBaseURL(server)+"/api/store/proxies", nil)
-	if err != nil {
-		return nil, err
-	}
-	setAdminAuth(req, server)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("GET /api/store/proxies failed: %s %s", resp.Status, strings.TrimSpace(string(body)))
-	}
-	var payload struct {
-		Proxies []struct {
-			Name string `json:"name"`
-		} `json:"proxies"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, err
-	}
-	names := map[string]bool{}
-	for _, proxy := range payload.Proxies {
-		if proxy.Name != "" {
-			names[proxy.Name] = true
-		}
-	}
-	return names, nil
-}
-
-func doStoreRequest(ctx context.Context, server app.Server, method string, path string, body io.Reader) error {
-	req, err := http.NewRequestWithContext(ctx, method, adminBaseURL(server)+path, body)
-	if err != nil {
-		return err
-	}
-	setAdminAuth(req, server)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("%s %s failed: %s %s", method, path, resp.Status, strings.TrimSpace(string(payload)))
-	}
-	return nil
-}
-
-func ruleToStoreDefinition(rule app.ProxyRule) map[string]any {
-	return map[string]any{
-		"name":    rule.Name,
-		"type":    rule.Type,
-		rule.Type: ruleToStoreBlock(rule),
-	}
-}
-
-func ruleToStoreBlock(rule app.ProxyRule) map[string]any {
-	block := map[string]any{
-		"name":      rule.Name,
-		"type":      rule.Type,
-		"localIP":   rule.LocalIP,
-		"localPort": rule.LocalPort,
-	}
-	if !rule.Enabled {
-		block["enabled"] = false
-	}
-	switch rule.Type {
-	case "tcp", "udp":
-		block["remotePort"] = rule.RemotePort
-	case "http", "https":
-		block["customDomains"] = rule.CustomDomains
-		if len(rule.Locations) > 0 {
-			block["locations"] = rule.Locations
-		}
-		if rule.HostHeaderRewrite != "" {
-			block["hostHeaderRewrite"] = rule.HostHeaderRewrite
-		}
-		if rule.HTTPUser != "" {
-			block["httpUser"] = rule.HTTPUser
-		}
-		if rule.HTTPPassword != "" && !strings.Contains(rule.HTTPPassword, "*") {
-			block["httpPassword"] = rule.HTTPPassword
-		}
-	}
-	if rule.UseEncryption {
-		block["transport.useEncryption"] = true
-	}
-	if rule.UseCompression {
-		block["transport.useCompression"] = true
-	}
-	if rule.BandwidthLimit != "" {
-		block["transport.bandwidthLimit"] = rule.BandwidthLimit
-	}
-	return block
-}
-
-func storeSupportedRule(rule app.ProxyRule) bool {
-	return rule.Enabled && rule.Type != "stcp" && rule.Type != "xtcp"
 }
 
 func adminBaseURL(server app.Server) string {
@@ -880,11 +672,6 @@ func int64FromMap(values map[string]any, keys ...string) (int64, bool) {
 	return 0, false
 }
 
-func urlPathEscape(value string) string {
-	replacer := strings.NewReplacer("%", "%25", "/", "%2F", "?", "%3F", "#", "%23", " ", "%20")
-	return replacer.Replace(value)
-}
-
 func binaryVersion(path string) (string, error) {
 	out, err := exec.Command(path, "--version").CombinedOutput()
 	if err != nil {
@@ -974,13 +761,6 @@ func (r *Runtime) githubURL(raw string, githubProxy string) string {
 		return raw
 	}
 	return strings.TrimRight(proxy, "/") + "/" + raw
-}
-
-func githubProxy() string {
-	if value := os.Getenv("FRPC_WEB_GITHUB_PROXY"); value != "" {
-		return value
-	}
-	return ""
 }
 
 type rotatingLogWriter struct {
@@ -1120,18 +900,30 @@ func tailLines(path string, n int) ([]string, error) {
 	return lines, nil
 }
 
+// parseLogLine 从 frpc 日志行中提取真实时间戳（格式 2006/01/02 15:04:05，
+// 可带毫秒）。解析不出时间时 Time 留空，避免用请求时刻冒充日志时间。
 func parseLogLine(line string) app.LogLine {
-	level := "info"
-	lower := strings.ToLower(line)
+	entry := app.LogLine{Level: "info", Message: line}
+	if len(line) >= 19 {
+		if ts, err := time.Parse("2006/01/02 15:04:05", line[:19]); err == nil {
+			entry.Time = ts.Format("15:04:05")
+			rest := line[19:]
+			if len(rest) > 1 && rest[0] == '.' {
+				i := 1
+				for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
+					i++
+				}
+				rest = rest[i:]
+			}
+			entry.Message = strings.TrimSpace(rest)
+		}
+	}
+	lower := strings.ToLower(entry.Message)
 	switch {
-	case strings.Contains(lower, "error") || strings.Contains(lower, "fail"):
-		level = "error"
-	case strings.Contains(lower, "warn"):
-		level = "warn"
+	case strings.Contains(entry.Message, "[E]") || strings.Contains(lower, "error") || strings.Contains(lower, "fail"):
+		entry.Level = "error"
+	case strings.Contains(entry.Message, "[W]") || strings.Contains(lower, "warn"):
+		entry.Level = "warn"
 	}
-	return app.LogLine{
-		Time:    time.Now().Format("15:04:05"),
-		Level:   level,
-		Message: line,
-	}
+	return entry
 }

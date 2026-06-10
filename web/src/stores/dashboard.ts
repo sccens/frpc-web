@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { getDashboard, type Dashboard } from '../api/client'
+import { errorMessage } from '../utils/errors'
 
 export const useDashboardStore = defineStore('dashboard', () => {
   const data = ref<Dashboard | null>(null)
@@ -16,7 +17,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     try {
       data.value = await getDashboard()
     } catch (err) {
-      error.value = err instanceof Error ? err.message : '加载数据失败'
+      error.value = errorMessage(err, '加载数据失败')
     } finally {
       loading.value = false
     }

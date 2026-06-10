@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +13,6 @@ import (
 )
 
 func TestAccessKeyAPIProtectsBusinessRoutes(t *testing.T) {
-	t.Setenv("FRPC_WEB_JWT_SECRET", "test-secret")
 	ctx := context.Background()
 	store, err := storage.Open(ctx, t.TempDir())
 	if err != nil {
@@ -68,8 +66,7 @@ func TestAccessKeyAPIProtectsBusinessRoutes(t *testing.T) {
 	assertStatus(t, handler, http.MethodGet, "/api/settings", "", http.StatusUnauthorized, sessionCookie)
 }
 
-func TestSessionsAccessKeyStatsAndAuditAPI(t *testing.T) {
-	t.Setenv("FRPC_WEB_JWT_SECRET", "test-secret")
+func TestAccessKeyStatsAndAuditAPI(t *testing.T) {
 	ctx := context.Background()
 	store, err := storage.Open(ctx, t.TempDir())
 	if err != nil {
@@ -88,9 +85,7 @@ func TestSessionsAccessKeyStatsAndAuditAPI(t *testing.T) {
 	firstCookie := bootstrapCookie(t, handler)
 	secondCookie := loginCookie(t, handler, "password123")
 
-	assertStatus(t, handler, http.MethodGet, "/api/auth/sessions", "", http.StatusOK, secondCookie)
-
-	createServerReq := `{"name":"main","serverAddr":"frp.example.com","serverPort":7000,"transportProtocol":"tcp","configMode":"toml_reload","adminPort":17400}`
+	createServerReq := `{"name":"main","serverAddr":"frp.example.com","serverPort":7000,"transportProtocol":"tcp","adminPort":17400}`
 	assertStatus(t, handler, http.MethodPost, "/api/servers", createServerReq, http.StatusCreated, secondCookie)
 	servers, err := store.ListServers(ctx)
 	if err != nil || len(servers) != 1 {
@@ -104,42 +99,18 @@ func TestSessionsAccessKeyStatsAndAuditAPI(t *testing.T) {
 	}
 	assertStatus(t, handler, http.MethodGet, "/api/stats", "", http.StatusOK, secondCookie)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/auth/sessions", nil)
-	req.AddCookie(secondCookie)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("sessions status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var sessions []app.Session
-	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
-		t.Fatalf("decode sessions: %v", err)
-	}
-	if len(sessions) != 2 {
-		t.Fatalf("sessions len = %d, want 2", len(sessions))
-	}
-	var firstID string
-	for _, session := range sessions {
-		if !session.Current {
-			firstID = session.ID
-		}
-	}
-	if firstID == "" {
-		t.Fatalf("did not find non-current session: %#v", sessions)
-	}
-	assertStatus(t, handler, http.MethodDelete, "/api/auth/sessions/"+firstID, "", http.StatusOK, secondCookie)
-	assertStatus(t, handler, http.MethodGet, "/api/settings", "", http.StatusUnauthorized, firstCookie)
-
+	// 修改 Access Key 后所有会话立即失效。
 	assertStatus(t, handler, http.MethodPost, "/api/auth/access-key", `{"currentAccessKey":"password123","newAccessKey":"new-password123"}`, http.StatusOK, secondCookie)
+	assertStatus(t, handler, http.MethodGet, "/api/settings", "", http.StatusUnauthorized, firstCookie)
 	assertStatus(t, handler, http.MethodGet, "/api/settings", "", http.StatusUnauthorized, secondCookie)
 	assertStatus(t, handler, http.MethodPost, "/api/auth/login", `{"accessKey":"password123"}`, http.StatusUnauthorized, nil)
 	newCookie := loginCookie(t, handler, "new-password123")
 	assertStatus(t, handler, http.MethodGet, "/api/settings", "", http.StatusOK, newCookie)
 	assertStatus(t, handler, http.MethodGet, "/api/audit-logs", "", http.StatusOK, newCookie)
+	assertStatus(t, handler, http.MethodDelete, "/api/audit-logs", "", http.StatusOK, newCookie)
 }
 
 func TestLoginRateLimit(t *testing.T) {
-	t.Setenv("FRPC_WEB_JWT_SECRET", "test-secret")
 	ctx := context.Background()
 	store, err := storage.Open(ctx, t.TempDir())
 	if err != nil {
@@ -167,6 +138,32 @@ func TestClientIPTrustProxyHeaders(t *testing.T) {
 	}
 	if got := clientIP(req, true); got != "203.0.113.8" {
 		t.Fatalf("clientIP with trust = %q, want XFF", got)
+	}
+}
+
+func TestSessionCookieSecureBehindTrustedHTTPSProxy(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	svc := app.NewService(app.Options{Store: store, Runtime: &serverFakeRuntime{}, Addr: "127.0.0.1:8080"})
+	handler := New(Options{Service: svc, WebDir: t.TempDir(), TrustProxyHeaders: true})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/bootstrap", bytes.NewBufferString(`{"accessKey":"password123"}`))
+	req.Header.Set("X-Forwarded-Proto", "https")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("bootstrap status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("bootstrap should set session cookie")
+	}
+	if !cookies[0].Secure {
+		t.Fatalf("session cookie should be secure behind trusted HTTPS proxy: %#v", cookies[0])
 	}
 }
 
