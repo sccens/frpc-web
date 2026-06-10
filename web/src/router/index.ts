@@ -8,7 +8,6 @@ const LoginPage = () => import('../pages/LoginPage.vue')
 const ServersPage = () => import('../pages/ServersPage.vue')
 const SettingsPage = () => import('../pages/SettingsPage.vue')
 const TopologyPage = () => import('../pages/TopologyPage.vue')
-const TrafficDashboardPage = () => import('../pages/TrafficDashboardPage.vue')
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -23,10 +22,10 @@ export const router = createRouter({
         { path: 'dashboard', name: 'dashboard', component: DashboardPage },
         { path: 'servers', name: 'servers', component: ServersPage },
         { path: 'topology', name: 'topology', component: TopologyPage },
-        { path: 'traffic', name: 'traffic', component: TrafficDashboardPage },
         { path: 'settings', name: 'settings', component: SettingsPage },
         { path: 'logs', redirect: '/dashboard' },
-        { path: 'stats', redirect: '/traffic' },
+        { path: 'stats', redirect: '/dashboard' },
+        { path: 'traffic', redirect: '/dashboard' },
         { path: 'audit', redirect: '/settings' },
         { path: 'versions', redirect: '/settings' },
       ],

@@ -2,7 +2,6 @@
 import { useRouter } from 'vue-router'
 import {
   Activity,
-  BarChart3,
   LogOut,
   Network,
   Server,
@@ -16,7 +15,6 @@ const navItems = [
   { to: '/dashboard', label: '总览', icon: Activity },
   { to: '/servers', label: '服务器', icon: Server },
   { to: '/topology', label: '拓扑', icon: Network },
-  { to: '/traffic', label: '流量', icon: BarChart3 },
   { to: '/settings', label: '设置', icon: Settings },
 ]
 

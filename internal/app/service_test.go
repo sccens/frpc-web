@@ -132,49 +132,14 @@ func TestServiceEnvAccessKeyPriority(t *testing.T) {
 	}
 }
 
-func TestServiceStatsAndAudit(t *testing.T) {
+func TestServiceAudit(t *testing.T) {
 	ctx := context.Background()
 	store, err := storage.Open(ctx, t.TempDir())
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-
-	runtime := &fakeRuntime{
-		alive: true,
-		adminStatus: app.AdminStatus{Proxies: []app.AdminProxyStatus{
-			{Name: "ssh", Type: "tcp", Status: "online", LocalAddr: "127.0.0.1:22", RemoteAddr: ":6022", TrafficAvailable: true, TrafficIn: 128, TrafficOut: 256},
-			{Name: "web", Type: "http", Status: "error", Error: "domain unavailable"},
-		}},
-	}
-	svc := app.NewService(app.Options{Store: store, Runtime: runtime, Addr: "127.0.0.1:8080"})
-	server, err := svc.CreateServer(ctx, app.ServerInput{Name: "main", ServerAddr: "frp.example.com", ServerPort: 7000, AdminPort: 17400})
-	if err != nil {
-		t.Fatalf("create server: %v", err)
-	}
-	if _, err := svc.CreateRule(ctx, server.ID, app.ProxyRuleInput{Name: "ssh", Type: "tcp", LocalIP: "127.0.0.1", LocalPort: 22, RemotePort: 6022, Enabled: true}); err != nil {
-		t.Fatalf("create rule: %v", err)
-	}
-	if err := store.SetServerStatus(ctx, server.ID, "running"); err != nil {
-		t.Fatalf("set status: %v", err)
-	}
-	if err := store.UpsertProcess(ctx, app.ProcessInfo{ServerID: server.ID, PID: 1234, StartedAt: "2026-01-01T00:00:00Z"}); err != nil {
-		t.Fatalf("upsert process: %v", err)
-	}
-
-	stats, err := svc.Stats(ctx)
-	if err != nil {
-		t.Fatalf("stats: %v", err)
-	}
-	if stats.Summary.RunningServers != 1 || stats.Summary.OnlineProxies != 1 || stats.Summary.ErrorProxies != 1 {
-		t.Fatalf("unexpected stats summary: %#v", stats.Summary)
-	}
-	if !stats.Summary.TrafficAvailable || stats.Summary.TotalTrafficIn != 128 || stats.Summary.TotalTrafficOut != 256 {
-		t.Fatalf("unexpected traffic summary: %#v", stats.Summary)
-	}
-	if len(stats.Errors) != 1 || stats.Errors[0].ProxyName != "web" {
-		t.Fatalf("unexpected stats errors: %#v", stats.Errors)
-	}
+	svc := app.NewService(app.Options{Store: store, Runtime: &fakeRuntime{}, Addr: "127.0.0.1:8080"})
 
 	svc.AddAudit(ctx, app.AuditLogInput{
 		IP:           "127.0.0.1",
@@ -345,8 +310,6 @@ type fakeRuntime struct {
 	latest       string
 	latestProxy  string
 	installInput app.FRPCInstallOnlineInput
-	adminStatus  app.AdminStatus
-	adminErr     error
 	alive        bool
 }
 
@@ -396,10 +359,6 @@ func (r *fakeRuntime) LatestVersion(_ context.Context, githubProxy string) (stri
 		return "0.70.0", nil
 	}
 	return r.latest, nil
-}
-
-func (r *fakeRuntime) AdminStatus(context.Context, app.Server) (app.AdminStatus, error) {
-	return r.adminStatus, r.adminErr
 }
 
 func (r *fakeRuntime) ProcessAlive(context.Context, int) bool {

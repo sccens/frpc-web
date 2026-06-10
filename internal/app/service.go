@@ -63,7 +63,6 @@ type Runtime interface {
 	InstallOnline(ctx context.Context, input FRPCInstallOnlineInput) (FRPCVersion, error)
 	InstallOffline(ctx context.Context, filename string, file io.Reader) (FRPCVersion, error)
 	LatestVersion(ctx context.Context, githubProxy string) (string, error)
-	AdminStatus(ctx context.Context, server Server) (AdminStatus, error)
 	ProcessAlive(ctx context.Context, pid int) bool
 	Adopt(serverID string, pid int)
 	SetExitHandler(handler func(serverID string, err error))
@@ -830,107 +829,6 @@ func (s *Service) CurrentVersion(ctx context.Context) FRPCVersion {
 	return s.currentVersion(ctx)
 }
 
-func (s *Service) Stats(ctx context.Context) (Stats, error) {
-	servers, err := s.store.ListServers(ctx)
-	if err != nil {
-		return Stats{}, err
-	}
-	sampledAt := time.Now().Format(time.RFC3339)
-	stats := Stats{
-		Servers:   make([]ServerStats, 0, len(servers)),
-		Proxies:   []ProxyStats{},
-		Errors:    []StatsError{},
-		SampledAt: sampledAt,
-	}
-
-	publicServers := make([]Server, len(servers))
-	for i := range servers {
-		publicServers[i] = s.withRuntimeFields(ctx, servers[i])
-	}
-
-	// 并发拉取各运行实例的 Admin API，避免多节点时串行等待。
-	type adminResult struct {
-		status AdminStatus
-		err    error
-	}
-	adminResults := make([]adminResult, len(servers))
-	var wg sync.WaitGroup
-	for i := range servers {
-		if !isRunningState(publicServers[i].Status) {
-			continue
-		}
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			status, err := s.runtime.AdminStatus(ctx, servers[i])
-			adminResults[i] = adminResult{status: status, err: err}
-		}(i)
-	}
-	wg.Wait()
-
-	for i, server := range servers {
-		publicServer := publicServers[i]
-		item := ServerStats{
-			ServerID:   publicServer.ID,
-			Name:       publicServer.Name,
-			Status:     publicServer.Status,
-			AdminPort:  publicServer.AdminPort,
-			ProxyCount: publicServer.ProxyCount,
-			SampledAt:  sampledAt,
-		}
-		stats.Summary.TotalServers++
-		stats.Summary.ProxyRules += publicServer.ProxyCount
-		if isRunningState(publicServer.Status) {
-			stats.Summary.RunningServers++
-			adminStatus, err := adminResults[i].status, adminResults[i].err
-			if err != nil {
-				item.Error = err.Error()
-				stats.Errors = append(stats.Errors, StatsError{ServerID: server.ID, ServerName: server.Name, Message: err.Error()})
-			} else {
-				for _, proxy := range adminStatus.Proxies {
-					p := ProxyStats{
-						ServerID:         server.ID,
-						ServerName:       server.Name,
-						Name:             proxy.Name,
-						Type:             proxy.Type,
-						Status:           proxy.Status,
-						LocalAddr:        proxy.LocalAddr,
-						RemoteAddr:       proxy.RemoteAddr,
-						TrafficAvailable: proxy.TrafficAvailable,
-						TrafficIn:        proxy.TrafficIn,
-						TrafficOut:       proxy.TrafficOut,
-						Error:            proxy.Error,
-					}
-					if isProxyOnline(proxy.Status) {
-						item.OnlineProxies++
-						stats.Summary.OnlineProxies++
-					}
-					if proxy.Error != "" || isProxyError(proxy.Status) {
-						item.ErrorProxies++
-						stats.Summary.ErrorProxies++
-						msg := proxy.Error
-						if msg == "" {
-							msg = "proxy status: " + proxy.Status
-						}
-						stats.Errors = append(stats.Errors, StatsError{ServerID: server.ID, ServerName: server.Name, ProxyName: proxy.Name, Message: msg})
-					}
-					if proxy.TrafficAvailable {
-						item.TrafficAvailable = true
-						stats.Summary.TrafficAvailable = true
-						item.TrafficIn += proxy.TrafficIn
-						item.TrafficOut += proxy.TrafficOut
-						stats.Summary.TotalTrafficIn += proxy.TrafficIn
-						stats.Summary.TotalTrafficOut += proxy.TrafficOut
-					}
-					stats.Proxies = append(stats.Proxies, p)
-				}
-			}
-		}
-		stats.Servers = append(stats.Servers, item)
-	}
-	return stats, nil
-}
-
 func (s *Service) currentVersion(ctx context.Context) FRPCVersion {
 	version, err := s.store.ActiveVersion(ctx)
 	if err == nil {
@@ -1420,12 +1318,3 @@ func subtleEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
-func isProxyOnline(status string) bool {
-	status = strings.ToLower(strings.TrimSpace(status))
-	return status == "online" || status == "running" || status == "start" || status == "started" || status == "ok"
-}
-
-func isProxyError(status string) bool {
-	status = strings.ToLower(strings.TrimSpace(status))
-	return strings.Contains(status, "error") || strings.Contains(status, "fail") || strings.Contains(status, "closed")
-}

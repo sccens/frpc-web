@@ -14,7 +14,6 @@ declare module 'vue' {
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElOption: typeof import('element-plus/es')['ElOption']
     ElSelect: typeof import('element-plus/es')['ElSelect']
-    ElSwitch: typeof import('element-plus/es')['ElSwitch']
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
     FloatingLogButton: typeof import('./../components/FloatingLogButton.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']

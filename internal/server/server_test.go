@@ -66,19 +66,14 @@ func TestAccessKeyAPIProtectsBusinessRoutes(t *testing.T) {
 	assertStatus(t, handler, http.MethodGet, "/api/settings", "", http.StatusUnauthorized, sessionCookie)
 }
 
-func TestAccessKeyStatsAndAuditAPI(t *testing.T) {
+func TestAccessKeyAndAuditAPI(t *testing.T) {
 	ctx := context.Background()
 	store, err := storage.Open(ctx, t.TempDir())
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	runtime := &serverFakeRuntime{
-		alive: true,
-		adminStatus: app.AdminStatus{Proxies: []app.AdminProxyStatus{
-			{Name: "ssh", Type: "tcp", Status: "online", TrafficAvailable: true, TrafficIn: 100, TrafficOut: 200},
-		}},
-	}
+	runtime := &serverFakeRuntime{alive: true}
 	svc := app.NewService(app.Options{Store: store, Runtime: runtime, Addr: "127.0.0.1:8080"})
 	handler := New(Options{Service: svc, WebDir: t.TempDir()})
 
@@ -91,13 +86,6 @@ func TestAccessKeyStatsAndAuditAPI(t *testing.T) {
 	if err != nil || len(servers) != 1 {
 		t.Fatalf("list servers: servers=%#v err=%v", servers, err)
 	}
-	if err := store.SetServerStatus(ctx, servers[0].ID, "running"); err != nil {
-		t.Fatalf("set server status: %v", err)
-	}
-	if err := store.UpsertProcess(ctx, app.ProcessInfo{ServerID: servers[0].ID, PID: 1234, StartedAt: "2026-01-01T00:00:00Z"}); err != nil {
-		t.Fatalf("upsert process: %v", err)
-	}
-	assertStatus(t, handler, http.MethodGet, "/api/stats", "", http.StatusOK, secondCookie)
 
 	// 修改 Access Key 后所有会话立即失效。
 	assertStatus(t, handler, http.MethodPost, "/api/auth/access-key", `{"currentAccessKey":"password123","newAccessKey":"new-password123"}`, http.StatusOK, secondCookie)
@@ -207,9 +195,7 @@ func loginCookie(t *testing.T, handler http.Handler, accessKey string) *http.Coo
 }
 
 type serverFakeRuntime struct {
-	adminStatus app.AdminStatus
-	adminErr    error
-	alive       bool
+	alive bool
 }
 
 func (r *serverFakeRuntime) RenderConfig(context.Context, app.Server) (app.ConfigPreview, error) {
@@ -246,10 +232,6 @@ func (r *serverFakeRuntime) InstallOffline(context.Context, string, io.Reader) (
 
 func (r *serverFakeRuntime) LatestVersion(context.Context, string) (string, error) {
 	return "0.70.0", nil
-}
-
-func (r *serverFakeRuntime) AdminStatus(context.Context, app.Server) (app.AdminStatus, error) {
-	return r.adminStatus, r.adminErr
 }
 
 func (r *serverFakeRuntime) ProcessAlive(context.Context, int) bool {

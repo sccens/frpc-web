@@ -6,11 +6,8 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -241,84 +238,6 @@ func TestInstallOnlineRejectsChecksumMismatch(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("install error = %v, want checksum mismatch", err)
-	}
-}
-
-func TestAdminStatusUsesBasicAuth(t *testing.T) {
-	rt := New(t.TempDir())
-	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, pass, ok := r.BasicAuth()
-		if !ok || user != "frpc-web" || pass != "admin-secret" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"tcp": []map[string]any{{
-				"name":       "ssh",
-				"status":     "online",
-				"trafficIn":  10,
-				"trafficOut": 20,
-			}},
-		})
-	}))
-	defer admin.Close()
-	parsed, err := url.Parse(admin.URL)
-	if err != nil {
-		t.Fatalf("parse server URL: %v", err)
-	}
-	_, port, err := net.SplitHostPort(parsed.Host)
-	if err != nil {
-		t.Fatalf("split host port: %v", err)
-	}
-	adminPort, err := strconv.Atoi(port)
-	if err != nil {
-		t.Fatalf("parse port: %v", err)
-	}
-
-	status, err := rt.AdminStatus(context.Background(), app.Server{
-		AdminPort:     adminPort,
-		AdminUser:     "frpc-web",
-		AdminPassword: "admin-secret",
-	})
-	if err != nil {
-		t.Fatalf("admin status: %v", err)
-	}
-	if len(status.Proxies) != 1 || status.Proxies[0].TrafficIn != 10 || status.Proxies[0].TrafficOut != 20 {
-		t.Fatalf("unexpected status: %#v", status)
-	}
-}
-
-func TestAdminStatusProxiesCollectsAllProxyTypes(t *testing.T) {
-	payload := map[string]any{
-		"tcp":   []any{map[string]any{"name": "ssh", "status": "online"}},
-		"udp":   []any{map[string]any{"name": "dns", "status": "online"}},
-		"http":  []any{map[string]any{"name": "web", "status": "online"}},
-		"https": []any{map[string]any{"name": "web-tls", "status": "online"}},
-		"stcp":  []any{map[string]any{"name": "secret-svc", "status": "online"}},
-		"xtcp":  []any{map[string]any{"name": "p2p-svc", "status": "online"}},
-		"sudp":  []any{map[string]any{"name": "secret-udp", "status": "online"}},
-	}
-	proxies := adminStatusProxies(payload)
-	types := map[string]string{}
-	for _, proxy := range proxies {
-		types[proxy.Name] = proxy.Type
-	}
-	expected := map[string]string{
-		"ssh":        "tcp",
-		"dns":        "udp",
-		"web":        "http",
-		"web-tls":    "https",
-		"secret-svc": "stcp",
-		"p2p-svc":    "xtcp",
-		"secret-udp": "sudp",
-	}
-	if len(proxies) != len(expected) {
-		t.Fatalf("expected %d proxies, got %d: %#v", len(expected), len(proxies), proxies)
-	}
-	for name, wantType := range expected {
-		if types[name] != wantType {
-			t.Fatalf("proxy %s: expected type %s, got %q", name, wantType, types[name])
-		}
 	}
 }
 

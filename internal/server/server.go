@@ -46,7 +46,6 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("GET /api/audit-logs", api.auditLogs)
 	mux.HandleFunc("DELETE /api/audit-logs", api.clearAuditLogs)
 	mux.HandleFunc("GET /api/dashboard", api.dashboard)
-	mux.HandleFunc("GET /api/stats", api.stats)
 	mux.HandleFunc("GET /api/settings", api.settings)
 	mux.HandleFunc("PUT /api/settings", api.updateSettings)
 	mux.HandleFunc("GET /api/config/export", api.exportConfig)
@@ -192,11 +191,6 @@ func (h apiHandler) clearAuditLogs(w http.ResponseWriter, r *http.Request) {
 
 func (h apiHandler) dashboard(w http.ResponseWriter, r *http.Request) {
 	payload, err := h.service.Dashboard(r.Context())
-	writeResult(w, payload, err)
-}
-
-func (h apiHandler) stats(w http.ResponseWriter, r *http.Request) {
-	payload, err := h.service.Stats(r.Context())
 	writeResult(w, payload, err)
 }
 

@@ -225,61 +225,6 @@ export interface AuditLogQuery {
   result?: string
 }
 
-export interface StatsSummary {
-  totalServers: number
-  runningServers: number
-  proxyRules: number
-  onlineProxies: number
-  errorProxies: number
-  trafficAvailable: boolean
-  totalTrafficIn: number
-  totalTrafficOut: number
-}
-
-export interface ServerStats {
-  serverId: string
-  name: string
-  status: string
-  adminPort: number
-  proxyCount: number
-  onlineProxies: number
-  errorProxies: number
-  trafficAvailable: boolean
-  trafficIn: number
-  trafficOut: number
-  error?: string
-  sampledAt: string
-}
-
-export interface ProxyStats {
-  serverId: string
-  serverName: string
-  name: string
-  type: string
-  status: string
-  localAddr: string
-  remoteAddr: string
-  trafficAvailable: boolean
-  trafficIn: number
-  trafficOut: number
-  error?: string
-}
-
-export interface StatsError {
-  serverId: string
-  serverName: string
-  proxyName?: string
-  message: string
-}
-
-export interface Stats {
-  summary: StatsSummary
-  servers: ServerStats[]
-  proxies: ProxyStats[]
-  errors: StatsError[]
-  sampledAt: string
-}
-
 const http = axios.create({
   baseURL: '/api',
   timeout: 120000,
@@ -322,11 +267,6 @@ export async function clearAuditLogs() {
 
 export async function getDashboard() {
   const { data } = await http.get<Dashboard>('/dashboard')
-  return data
-}
-
-export async function getStats() {
-  const { data } = await http.get<Stats>('/stats')
   return data
 }
 
