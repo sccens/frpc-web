@@ -65,6 +65,7 @@ type Runtime interface {
 	LatestVersion(ctx context.Context, githubProxy string) (string, error)
 	AdminStatus(ctx context.Context, server Server) (AdminStatus, error)
 	ProcessAlive(ctx context.Context, pid int) bool
+	Adopt(serverID string, pid int)
 	SetExitHandler(handler func(serverID string, err error))
 }
 
@@ -81,12 +82,14 @@ type Options struct {
 	Store   Store
 	Runtime Runtime
 	Addr    string
+	Version string
 }
 
 type Service struct {
 	store           Store
 	runtime         Runtime
 	addr            string
+	version         string
 	bootstrapMu     sync.Mutex
 	restartMu       sync.Mutex
 	restartAttempts map[string]int
@@ -94,10 +97,15 @@ type Service struct {
 }
 
 func NewService(opts Options) *Service {
+	version := strings.TrimSpace(opts.Version)
+	if version == "" {
+		version = "dev"
+	}
 	svc := &Service{
 		store:           opts.Store,
 		runtime:         opts.Runtime,
 		addr:            opts.Addr,
+		version:         version,
 		restartAttempts: map[string]int{},
 		restartTimers:   map[string]*time.Timer{},
 	}
@@ -120,6 +128,10 @@ func (s *Service) Restore(ctx context.Context) error {
 				_ = s.store.DeleteProcess(ctx, server.ID)
 				_ = s.store.SetServerStatus(ctx, server.ID, "stopped")
 				_ = s.store.AddHealth(ctx, server.ID, "warning", "上次运行的 frpc 进程不存在，已恢复为停止状态")
+			} else {
+				// 进程仍在运行（如自更新原地重启后遗留的子进程）：
+				// 接管监控，退出时仍能触发自动重启等生命周期处理。
+				s.runtime.Adopt(server.ID, process.PID)
 			}
 		}
 	}

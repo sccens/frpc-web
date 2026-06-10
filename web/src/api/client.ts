@@ -335,6 +335,25 @@ export async function getSettings() {
   return data
 }
 
+export interface UpdateCheck {
+  current: string
+  latest: string
+  hasUpdate: boolean
+  notesUrl: string
+  canApply: boolean
+  applyHint?: string
+}
+
+export async function checkAppUpdate() {
+  const { data } = await http.get<UpdateCheck>('/app/update/check')
+  return data
+}
+
+export async function applyAppUpdate() {
+  const { data } = await http.post<ActionResult>('/app/update/apply')
+  return data
+}
+
 export async function updateSettings(input: SettingsInput) {
   const { data } = await http.put<Settings>('/settings', input)
   return data

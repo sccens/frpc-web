@@ -73,6 +73,8 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("POST /api/frpc/check-latest", api.checkLatest)
 	mux.HandleFunc("POST /api/frpc/install/online", api.installOnline)
 	mux.HandleFunc("POST /api/frpc/install/offline", api.installOffline)
+	mux.HandleFunc("GET /api/app/update/check", api.updateCheck)
+	mux.HandleFunc("POST /api/app/update/apply", api.updateApply)
 	mux.Handle("/", staticHandler(opts.WebDir, opts.WebFS))
 
 	return loggingMiddleware(opts.Logger, authMiddleware(opts.Service, auditMiddleware(opts.Service, opts.TrustProxyHeaders, mux)))
@@ -111,8 +113,7 @@ func (h apiHandler) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := clientIP(r, h.trustProxyHeaders)
 	if retryAfter, ok := h.limiter.Allow(ip); !ok {
-		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
-		writeError(w, http.StatusTooManyRequests, "too many failed attempts; try again later")
+		writeRateLimited(w, retryAfter)
 		return
 	}
 	meta := app.AuthMeta{IP: ip, UserAgent: r.UserAgent()}
@@ -136,8 +137,7 @@ func (h apiHandler) login(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := clientIP(r, h.trustProxyHeaders)
 	if retryAfter, ok := h.limiter.Allow(ip); !ok {
-		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
-		writeError(w, http.StatusTooManyRequests, "too many failed attempts; try again later")
+		writeRateLimited(w, retryAfter)
 		return
 	}
 	meta := app.AuthMeta{IP: ip, UserAgent: r.UserAgent()}
@@ -175,8 +175,7 @@ func (h apiHandler) changeAccessKey(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, map[string]bool{"ok": true}, err)
 }
 
-func (h apiHandler) auditLogs(w http.ResponseWriter, r *http.Request) {
-	query := app.AuditLogQuery{
+func (h apiHandler) auditLogs(w http.ResponseWriter, r *http.Request) {	query := app.AuditLogQuery{
 		Page:     queryInt(r, "page", 1),
 		PageSize: queryInt(r, "pageSize", 50),
 		Action:   r.URL.Query().Get("action"),
@@ -378,6 +377,20 @@ func (h apiHandler) installOffline(w http.ResponseWriter, r *http.Request) {
 	writeResultStatus(w, http.StatusCreated, payload, err)
 }
 
+func (h apiHandler) updateCheck(w http.ResponseWriter, r *http.Request) {
+	check, err := h.service.CheckUpdate(r.Context())
+	writeResult(w, check, err)
+}
+
+func (h apiHandler) updateApply(w http.ResponseWriter, r *http.Request) {
+	result, err := h.service.ApplyUpdate(r.Context())
+	if err != nil {
+		writeResult(w, result, err)
+		return
+	}
+	writeAction(w, result)
+}
+
 func (h apiHandler) auditAuth(r *http.Request, action, result, errorText string) {
 	h.service.AddAudit(r.Context(), app.AuditLogInput{
 		IP:           clientIP(r, h.trustProxyHeaders),
@@ -444,6 +457,16 @@ func writeAction(w http.ResponseWriter, result app.ActionResult) {
 		return
 	}
 	writeJSON(w, http.StatusBadRequest, result)
+}
+
+// writeRateLimited 返回 429 与人类可读的剩余锁定时长。
+func writeRateLimited(w http.ResponseWriter, retryAfter time.Duration) {
+	w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+	minutes := int((retryAfter + time.Minute - 1) / time.Minute)
+	if minutes < 1 {
+		minutes = 1
+	}
+	writeError(w, http.StatusTooManyRequests, fmt.Sprintf("失败次数过多，已临时锁定，请约 %d 分钟后再试", minutes))
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

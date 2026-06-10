@@ -407,3 +407,5 @@ func (r *fakeRuntime) ProcessAlive(context.Context, int) bool {
 }
 
 func (r *fakeRuntime) SetExitHandler(func(string, error)) {}
+
+func (r *fakeRuntime) Adopt(string, int) {}

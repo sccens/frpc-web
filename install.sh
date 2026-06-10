@@ -225,8 +225,9 @@ install_binary() {
         [ -n "$SUDO" ] && warn "需要管理员权限安装到 $INSTALL_DIR"
     fi
 
-    # install 会同时设置属主（sudo 下为 root）和权限，避免留下普通用户可改写的系统二进制
-    if ! $SUDO install -m 0755 "$TMP_FILE" "$INSTALL_DIR/$BINARY_NAME"; then
+    # install 会同时设置属主（sudo 下为 root）和权限，避免留下普通用户可改写的系统二进制；
+    # 先显式删除目标（可能是旧版安装留下的软链接），确保落盘的是真实文件
+    if ! { $SUDO rm -f "$INSTALL_DIR/$BINARY_NAME" && $SUDO install -m 0755 "$TMP_FILE" "$INSTALL_DIR/$BINARY_NAME"; }; then
         [ "${KEEP_SOURCE:-0}" = "1" ] || rm -f "$TMP_FILE"
         error "安装失败"
     fi
@@ -289,7 +290,15 @@ setup_service() {
     fi
 
     $SVC_SUDO install -d -m 0755 "$SERVICE_DIR"
+    $SVC_SUDO install -d -m 0755 -o "$APP_USER" -g "$APP_GROUP" "$SERVICE_DIR/bin"
     $SVC_SUDO install -d -m 0700 -o "$APP_USER" -g "$APP_GROUP" "$SERVICE_DIR/data"
+
+    # 服务模式下二进制归服务用户所有，Web 控制台的一键自更新才能替换它；
+    # /usr/local/bin 保留软链接方便命令行调用
+    SERVICE_BIN="$SERVICE_DIR/bin/$BINARY_NAME"
+    $SVC_SUDO install -m 0755 -o "$APP_USER" -g "$APP_GROUP" "$INSTALL_DIR/$BINARY_NAME" "$SERVICE_BIN"
+    $SVC_SUDO rm -f "$INSTALL_DIR/$BINARY_NAME"
+    $SVC_SUDO ln -s "$SERVICE_BIN" "$INSTALL_DIR/$BINARY_NAME"
 
     # 不覆盖已有配置，便于升级时保留用户设置
     if ! $SVC_SUDO test -f "$SERVICE_ENV_FILE"; then
@@ -316,7 +325,7 @@ User=$APP_USER
 Group=$APP_GROUP
 WorkingDirectory=$SERVICE_DIR
 EnvironmentFile=-$SERVICE_ENV_FILE
-ExecStart=$INSTALL_DIR/$BINARY_NAME
+ExecStart=$SERVICE_BIN
 Restart=on-failure
 RestartSec=3
 UMask=0077
@@ -324,7 +333,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=$SERVICE_DIR/data
+ReadWritePaths=$SERVICE_DIR/data $SERVICE_DIR/bin
 LimitNOFILE=65535
 
 [Install]

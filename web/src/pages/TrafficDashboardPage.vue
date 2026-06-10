@@ -472,9 +472,13 @@ const totalTraffic = computed(() => {
 
     <section v-if="stats && !stats.summary.trafficAvailable" class="security-band compact">
       <Activity :size="18" :stroke-width="1.8" />
-      <div>
-        <strong>流量数据不可用</strong>
-        <p>当前 frpc Admin API 未返回流量数据。请确保服务器正在运行且配置了 Admin API。</p>
+      <div v-if="stats.summary.runningServers === 0">
+        <strong>暂无运行中的服务器</strong>
+        <p>启动服务器后，这里会实时展示各代理的连接状态，无需任何配置。</p>
+      </div>
+      <div v-else>
+        <strong>流量图表不可用（属正常现象）</strong>
+        <p>frp 客户端接口不提供流量统计（流量数据只存在于 frps 服务端），无需任何配置。下方代理在线状态为实时数据。</p>
       </div>
     </section>
 

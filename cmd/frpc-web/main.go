@@ -49,6 +49,7 @@ func main() {
 		Store:   store,
 		Runtime: runtime,
 		Addr:    addr,
+		Version: Version,
 	})
 	if err := svc.Restore(ctx); err != nil {
 		logger.Warn("restore runtime state failed", "error", err)

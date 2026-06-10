@@ -153,8 +153,9 @@ function openEditServer(server: Server) {
     autoStart: server.autoStart,
     autoRestart: server.autoRestart,
     maxRestarts: server.maxRestarts || 3,
-    adminPort: server.adminPort,
-    adminUser: server.adminUser || '',
+    // Admin API 由系统自动管理：发送零值，后端会保留现有端口与凭据
+    adminPort: 0,
+    adminUser: '',
     adminPassword: '',
   }
   serverDrawerOpen.value = true
@@ -488,20 +489,6 @@ function localTarget(rule: ProxyRule) {
                   </select>
                 </label>
               </div>
-              <div class="form-grid">
-                <label>
-                  <span>Admin 端口</span>
-                  <input v-model.number="serverForm.adminPort" type="number" min="0" max="65535" placeholder="自动分配" />
-                </label>
-                <label>
-                  <span>Admin 用户</span>
-                  <input v-model="serverForm.adminUser" placeholder="frpc-web" />
-                </label>
-              </div>
-              <label>
-                <span>Admin 密码</span>
-                <input v-model="serverForm.adminPassword" type="password" placeholder="留空则自动生成或保留原密码" />
-              </label>
               <div class="form-grid">
                 <label>
                   <span>自动启动</span>

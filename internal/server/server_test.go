@@ -257,3 +257,5 @@ func (r *serverFakeRuntime) ProcessAlive(context.Context, int) bool {
 }
 
 func (r *serverFakeRuntime) SetExitHandler(func(string, error)) {}
+
+func (r *serverFakeRuntime) Adopt(string, int) {}

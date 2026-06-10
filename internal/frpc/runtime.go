@@ -240,6 +240,46 @@ func (r *Runtime) ProcessAlive(_ context.Context, pid int) bool {
 	return true
 }
 
+// Adopt 监控一个不是由当前进程启动的 frpc（典型场景：自更新通过
+// syscall.Exec 原地重启后遗留的子进程）。进程退出时回收僵尸（若仍是
+// 本进程的子进程）并触发与正常生命周期一致的退出处理。
+func (r *Runtime) Adopt(serverID string, pid int) {
+	if pid <= 0 || serverID == "" {
+		return
+	}
+	go func() {
+		for {
+			time.Sleep(2 * time.Second)
+
+			r.mu.Lock()
+			_, tracked := r.cmds[serverID]
+			r.mu.Unlock()
+			if tracked {
+				// 该服务器已被新的 Start 接管，监控职责移交给其等待协程
+				return
+			}
+
+			// 非阻塞回收：若退出后成为本进程的僵尸子进程，这里完成收割
+			var status syscall.WaitStatus
+			if wpid, _ := syscall.Wait4(pid, &status, syscall.WNOHANG, nil); wpid == pid {
+				break
+			}
+			if !r.ProcessAlive(context.Background(), pid) {
+				break
+			}
+		}
+
+		r.mu.Lock()
+		stopping := r.stopping[serverID]
+		delete(r.stopping, serverID)
+		handler := r.onExit
+		r.mu.Unlock()
+		if !stopping && handler != nil {
+			handler(serverID, errors.New("process exited"))
+		}
+	}()
+}
+
 func (r *Runtime) InstallOnline(ctx context.Context, input app.FRPCInstallOnlineInput) (app.FRPCVersion, error) {
 	if input.Platform == "" {
 		input.Platform = runtime.GOOS

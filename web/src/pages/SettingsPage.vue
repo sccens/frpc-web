@@ -13,9 +13,12 @@ import {
 } from 'lucide-vue-next'
 import {
   activateFrpcVersion,
+  applyAppUpdate,
   changeAccessKey,
+  checkAppUpdate,
   checkLatestFrpc,
   clearAuditLogs,
+  getAuthStatus,
   getFrpcVersion,
   getFrpcVersions,
   getSettings,
@@ -29,6 +32,7 @@ import {
   type FrpcVersion,
   type Settings,
   type AuditLogPage,
+  type UpdateCheck,
 } from '../api/client'
 import { errorMessage } from '../utils/errors'
 
@@ -69,6 +73,7 @@ onMounted(() => {
   void loadSettings()
   void loadVersions()
   void loadAuditLogs(1)
+  void checkForUpdate(true)
 })
 
 async function loadSettings() {
@@ -299,6 +304,72 @@ function actionLabel(value: string) {
   }
   return labels[value] || value
 }
+
+const updateInfo = ref<UpdateCheck | null>(null)
+const updateChecking = ref(false)
+const updating = ref(false)
+
+async function checkForUpdate(silent = false) {
+  updateChecking.value = true
+  try {
+    updateInfo.value = await checkAppUpdate()
+    if (!silent) {
+      if (updateInfo.value.hasUpdate) {
+        ElMessage.success(`发现新版本 ${updateInfo.value.latest}`)
+      } else {
+        ElMessage.info('当前已是最新版本')
+      }
+    }
+  } catch (err) {
+    if (!silent) ElMessage.error(errorMessage(err, '检查更新失败'))
+  } finally {
+    updateChecking.value = false
+  }
+}
+
+async function performUpdate() {
+  const info = updateInfo.value
+  if (!info?.hasUpdate) return
+  try {
+    await ElMessageBox.confirm(
+      `将更新到 ${info.latest} 并自动重启服务（PID 不变，运行中的隧道不会中断）。`,
+      '一键更新',
+      { type: 'warning', confirmButtonText: '立即更新', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  updating.value = true
+  try {
+    const result = await applyAppUpdate()
+    if (!result.ok) {
+      ElMessage.error(result.message)
+      updating.value = false
+      return
+    }
+    ElMessage.success(result.message)
+    awaitRestartThenReload()
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '更新失败'))
+    updating.value = false
+  }
+}
+
+// 等服务重启完成后刷新页面加载新版前端；最多等 60 秒
+function awaitRestartThenReload() {
+  const startedAt = Date.now()
+  window.setTimeout(function probe() {
+    getAuthStatus()
+      .then(() => window.location.reload())
+      .catch(() => {
+        if (Date.now() - startedAt > 60000) {
+          window.location.reload()
+          return
+        }
+        window.setTimeout(probe, 1500)
+      })
+  }, 3000)
+}
 </script>
 
 <template>
@@ -422,6 +493,39 @@ function actionLabel(value: string) {
           </label>
         </div>
       </div>
+    </section>
+
+    <section class="surface-panel settings-panel">
+      <div class="section-heading settings-heading">
+        <div>
+          <p class="overline">System</p>
+          <h2>系统更新</h2>
+          <span v-if="updateInfo">
+            当前版本 {{ updateInfo.current }} · 最新版本
+            <a :href="updateInfo.notesUrl" target="_blank" rel="noopener">{{ updateInfo.latest }}</a>
+          </span>
+          <span v-else>frpc-web 自身的版本管理</span>
+        </div>
+        <div class="row-actions">
+          <button class="ghost-action strong" type="button" :disabled="updateChecking" @click="checkForUpdate()">
+            <RefreshCw :size="15" :stroke-width="1.8" />
+            检查更新
+          </button>
+          <button
+            v-if="updateInfo?.hasUpdate && updateInfo?.canApply"
+            class="primary-action"
+            type="button"
+            :disabled="updating"
+            @click="performUpdate"
+          >
+            <Download :size="15" :stroke-width="1.8" />
+            {{ updating ? '更新中…' : `一键更新到 ${updateInfo.latest}` }}
+          </button>
+        </div>
+      </div>
+      <p v-if="updateInfo?.hasUpdate && !updateInfo.canApply" class="muted-inline">{{ updateInfo.applyHint }}</p>
+      <p v-else-if="updateInfo?.hasUpdate" class="muted-inline">更新会下载新版本并校验 SHA256，随后原地重启服务，运行中的隧道不会中断。</p>
+      <p v-else-if="updateInfo" class="muted-inline">已是最新版本。</p>
     </section>
 
     <section class="surface-panel">
