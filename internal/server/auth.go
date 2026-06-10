@@ -5,15 +5,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/sccens/frpc-web/internal/app"
 )
 
-const (
-	sessionCookieName = "frpc_web_session"
-	sessionTTL        = 12 * time.Hour
-)
+const sessionCookieName = "frpc_web_session"
 
 func authMiddleware(service *app.Service, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,7 +51,7 @@ func writeSessionCookie(w http.ResponseWriter, r *http.Request, session app.Sess
 		Name:     sessionCookieName,
 		Value:    session.Token,
 		Path:     "/",
-		MaxAge:   int(sessionTTL.Seconds()),
+		MaxAge:   int(app.SessionTTL.Seconds()),
 		HttpOnly: true,
 		Secure:   isSecureRequest(r, trustProxyHeaders),
 		SameSite: http.SameSiteLaxMode,

@@ -325,7 +325,8 @@ func (s *Store) UpdateServer(_ context.Context, id string, input app.ServerInput
 	}
 	server.RestartRequired = server.RestartRequired || server.ServerAddr != input.ServerAddr ||
 		server.ServerPort != input.ServerPort || server.AuthToken != input.AuthToken ||
-		server.TransportProtocol != input.TransportProtocol || server.AdminPort != input.AdminPort
+		server.TransportProtocol != input.TransportProtocol || server.AdminPort != input.AdminPort ||
+		server.AdminUser != input.AdminUser || server.AdminPassword != input.AdminPassword
 	server.Name = input.Name
 	server.ServerAddr = input.ServerAddr
 	server.ServerPort = input.ServerPort

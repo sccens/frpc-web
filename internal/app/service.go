@@ -87,6 +87,7 @@ type Service struct {
 	store           Store
 	runtime         Runtime
 	addr            string
+	bootstrapMu     sync.Mutex
 	restartMu       sync.Mutex
 	restartAttempts map[string]int
 	restartTimers   map[string]*time.Timer
@@ -146,12 +147,23 @@ func (s *Service) handleRuntimeExit(serverID string, exitErr error) {
 	if err != nil {
 		return
 	}
+	process, processErr := s.store.GetProcess(context.Background(), serverID)
 	_ = s.store.DeleteProcess(context.Background(), serverID)
 
 	if !server.AutoRestart {
 		_ = s.store.SetServerStatus(context.Background(), serverID, "error")
 		_ = s.store.AddHealth(context.Background(), serverID, "warning", "frpc 进程已退出: "+exitErrorText(exitErr))
 		return
+	}
+
+	// 稳定运行一段时间后才崩溃的，视为新一轮故障，不累计历史次数；
+	// 否则数月间偶发 N 次崩溃就会永久禁用自动重启。
+	if processErr == nil {
+		if started, err := time.Parse(time.RFC3339, process.StartedAt); err == nil && time.Since(started) >= stableRunDuration {
+			s.restartMu.Lock()
+			delete(s.restartAttempts, serverID)
+			s.restartMu.Unlock()
+		}
 	}
 
 	maxRestarts := server.MaxRestarts
@@ -173,8 +185,14 @@ func (s *Service) handleRuntimeExit(serverID string, exitErr error) {
 		return
 	}
 	delay := restartBackoff(attempt)
-	timer := time.AfterFunc(delay, func() {
+	var timer *time.Timer
+	timer = time.AfterFunc(delay, func() {
 		s.restartMu.Lock()
+		// 手动 Stop/Start 会移除注册的定时器；若已不是本定时器，说明重启被取消。
+		if s.restartTimers[serverID] != timer {
+			s.restartMu.Unlock()
+			return
+		}
 		delete(s.restartTimers, serverID)
 		s.restartMu.Unlock()
 		result := s.start(context.Background(), serverID, false)
@@ -195,6 +213,9 @@ func (s *Service) AuthStatus(ctx context.Context) (AuthStatus, error) {
 }
 
 func (s *Service) Bootstrap(ctx context.Context, input AuthInput, meta AuthMeta) (Session, error) {
+	// 串行化首次初始化，避免并发请求都通过 accessKeyConfigured 检查后互相覆盖。
+	s.bootstrapMu.Lock()
+	defer s.bootstrapMu.Unlock()
 	if s.accessKeyConfigured(ctx) {
 		return Session{}, ErrAlreadyBootstrapped
 	}
@@ -389,13 +410,13 @@ func (s *Service) UpdateServer(ctx context.Context, id string, input ServerInput
 		return Server{}, err
 	}
 	input = normalizeServerDefaults(input)
-	if input.AuthToken == "" || looksMaskedSecret(input.AuthToken) {
+	if input.AuthToken == "" || LooksMaskedSecret(input.AuthToken) {
 		input.AuthToken = current.AuthToken
 	}
 	if input.AdminUser == "" {
 		input.AdminUser = current.AdminUser
 	}
-	if input.AdminPassword == "" || looksMaskedSecret(input.AdminPassword) {
+	if input.AdminPassword == "" || LooksMaskedSecret(input.AdminPassword) {
 		input.AdminPassword = current.AdminPassword
 	}
 	if input.AdminPort == 0 {
@@ -459,10 +480,10 @@ func (s *Service) UpdateRule(ctx context.Context, serverID, ruleID string, input
 		return ProxyRule{}, err
 	}
 	input = normalizeRuleDefaults(input)
-	if input.SecretKey == "" || looksMaskedSecret(input.SecretKey) {
+	if input.SecretKey == "" || LooksMaskedSecret(input.SecretKey) {
 		input.SecretKey = current.SecretKey
 	}
-	if input.HTTPPassword == "" || looksMaskedSecret(input.HTTPPassword) {
+	if input.HTTPPassword == "" || LooksMaskedSecret(input.HTTPPassword) {
 		input.HTTPPassword = current.HTTPPassword
 	}
 	if err := validateRule(input); err != nil {
@@ -727,6 +748,30 @@ func (s *Service) ImportConfig(ctx context.Context, input ConfigImportInput) (Ac
 	if input.Bundle.Version == 0 {
 		return ActionResult{}, invalidInput(errors.New("config bundle version is required"))
 	}
+
+	// 先完整校验整个 bundle，再做任何破坏性操作，避免无效备份清空现有配置。
+	type importEntry struct {
+		name   string
+		server ServerInput
+		rules  []ProxyRuleInput
+	}
+	entries := make([]importEntry, 0, len(input.Bundle.Servers))
+	for _, item := range input.Bundle.Servers {
+		serverInput := importServerInput(item.Server)
+		if err := validateServer(serverInput); err != nil {
+			return ActionResult{}, invalidInput(fmt.Errorf("server %q: %w", item.Server.Name, err))
+		}
+		entry := importEntry{name: item.Server.Name, server: serverInput, rules: make([]ProxyRuleInput, 0, len(item.Rules))}
+		for _, rule := range item.Rules {
+			ruleInput := importRuleInput(rule)
+			if err := validateRule(ruleInput); err != nil {
+				return ActionResult{}, invalidInput(fmt.Errorf("rule %q: %w", rule.Name, err))
+			}
+			entry.rules = append(entry.rules, ruleInput)
+		}
+		entries = append(entries, entry)
+	}
+
 	if mode == "replace" {
 		servers, err := s.store.ListServers(ctx)
 		if err != nil {
@@ -749,21 +794,13 @@ func (s *Service) ImportConfig(ctx context.Context, input ConfigImportInput) (Ac
 	}
 	createdServers := 0
 	createdRules := 0
-	for _, item := range input.Bundle.Servers {
-		serverInput := importServerInput(item.Server)
-		if err := validateServer(serverInput); err != nil {
-			return ActionResult{}, invalidInput(fmt.Errorf("server %q: %w", item.Server.Name, err))
-		}
-		server, err := s.store.CreateServer(ctx, serverInput)
+	for _, entry := range entries {
+		server, err := s.store.CreateServer(ctx, entry.server)
 		if err != nil {
 			return ActionResult{}, err
 		}
 		createdServers++
-		for _, rule := range item.Rules {
-			ruleInput := importRuleInput(rule)
-			if err := validateRule(ruleInput); err != nil {
-				return ActionResult{}, invalidInput(fmt.Errorf("rule %q: %w", rule.Name, err))
-			}
+		for _, ruleInput := range entry.rules {
 			if _, err := s.store.CreateRule(ctx, server.ID, ruleInput); err != nil {
 				return ActionResult{}, err
 			}
@@ -924,10 +961,15 @@ func (s *Service) withRuntimeFields(ctx context.Context, server Server) Server {
 	if isRunningState(server.Status) {
 		process, err := s.store.GetProcess(ctx, server.ID)
 		if err != nil {
-			server.Status = "error"
-			server.Uptime = "-"
-			_ = s.store.SetServerStatus(ctx, server.ID, "error")
-			_ = s.store.AddHealth(ctx, server.ID, "warning", "运行状态缺少进程记录")
+			if s.restartPending(server.ID) {
+				// 自动重启退避中本来就没有进程记录，保持 starting 状态即可。
+				server.Uptime = "-"
+			} else {
+				server.Status = "error"
+				server.Uptime = "-"
+				_ = s.store.SetServerStatus(ctx, server.ID, "error")
+				_ = s.store.AddHealth(ctx, server.ID, "warning", "运行状态缺少进程记录")
+			}
 		} else if !s.runtime.ProcessAlive(ctx, process.PID) {
 			server.Status = "error"
 			server.Uptime = "-"
@@ -1150,10 +1192,10 @@ func importServerInput(server Server) ServerInput {
 		AdminUser:         server.AdminUser,
 		AdminPassword:     server.AdminPassword,
 	}
-	if looksMaskedSecret(input.AuthToken) {
+	if LooksMaskedSecret(input.AuthToken) {
 		input.AuthToken = ""
 	}
-	if looksMaskedSecret(input.AdminPassword) {
+	if LooksMaskedSecret(input.AdminPassword) {
 		input.AdminPassword = ""
 	}
 	return normalizeServerDefaults(input)
@@ -1182,10 +1224,10 @@ func importRuleInput(rule ProxyRule) ProxyRuleInput {
 		HTTPPassword:      rule.HTTPPassword,
 		RequestHeaders:    rule.RequestHeaders,
 	}
-	if looksMaskedSecret(input.SecretKey) {
+	if LooksMaskedSecret(input.SecretKey) {
 		input.SecretKey = ""
 	}
-	if looksMaskedSecret(input.HTTPPassword) {
+	if LooksMaskedSecret(input.HTTPPassword) {
 		input.HTTPPassword = ""
 	}
 	return normalizeRuleDefaults(input)
@@ -1199,7 +1241,9 @@ func maskSecret(value string) string {
 	return value[:2] + "****" + value[len(value)-2:]
 }
 
-func looksMaskedSecret(value string) bool {
+// LooksMaskedSecret 判断一个值是否是 maskSecret 输出的掩码（而非真实密钥），
+// 是 API 层与 TOML 渲染共用的唯一判定标准。
+func LooksMaskedSecret(value string) bool {
 	return strings.Count(value, "*") >= 4
 }
 
@@ -1224,6 +1268,17 @@ func (s *Service) resetRestartAttempts(serverID string) {
 	}
 	delete(s.restartTimers, serverID)
 }
+
+// restartPending 报告该服务器是否处于自动重启的退避等待中。
+func (s *Service) restartPending(serverID string) bool {
+	s.restartMu.Lock()
+	defer s.restartMu.Unlock()
+	return s.restartTimers[serverID] != nil
+}
+
+// stableRunDuration 是进程被视为“稳定运行”的最短时长；
+// 稳定运行后的崩溃不累计到自动重启次数上。
+const stableRunDuration = 5 * time.Minute
 
 func restartBackoff(attempt int) time.Duration {
 	if attempt <= 1 {
@@ -1293,6 +1348,9 @@ func (s *Service) verifyAccessKey(ctx context.Context, accessKey string) error {
 	return nil
 }
 
+// SessionTTL 是会话的有效期，Cookie MaxAge 与服务端过期时间共用此值。
+const SessionTTL = 12 * time.Hour
+
 func (s *Service) newSession(ctx context.Context, meta AuthMeta) (Session, error) {
 	token, err := randomHex(32)
 	if err != nil {
@@ -1306,7 +1364,7 @@ func (s *Service) newSession(ctx context.Context, meta AuthMeta) (Session, error
 		UserAgent:    strings.TrimSpace(meta.UserAgent),
 		CreatedAt:    now.Format(time.RFC3339),
 		LastAccessAt: now.Format(time.RFC3339),
-		ExpiresAt:    now.Add(12 * time.Hour).Format(time.RFC3339),
+		ExpiresAt:    now.Add(SessionTTL).Format(time.RFC3339),
 	}
 	session, err = s.store.CreateSession(ctx, session)
 	if err != nil {

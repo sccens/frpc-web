@@ -31,9 +31,16 @@ type Runtime struct {
 	githubProxy string
 	mu          sync.Mutex
 	cmds        map[string]*exec.Cmd
+	dones       map[string]chan struct{}
 	stopping    map[string]bool
 	onExit      func(serverID string, err error)
 }
+
+// stopGraceTimeout 是 SIGTERM 后等待 frpc 退出的时长，超时升级为 SIGKILL。
+const stopGraceTimeout = 5 * time.Second
+
+// maxReleaseArchiveSize 是在线安装时允许下载的发布包大小上限。
+const maxReleaseArchiveSize int64 = 128 << 20
 
 func New(dataDir string) *Runtime {
 	if dataDir == "" {
@@ -43,6 +50,7 @@ func New(dataDir string) *Runtime {
 		dataDir:     dataDir,
 		githubProxy: os.Getenv("FRPC_WEB_GITHUB_PROXY"),
 		cmds:        map[string]*exec.Cmd{},
+		dones:       map[string]chan struct{}{},
 		stopping:    map[string]bool{},
 	}
 }
@@ -111,6 +119,8 @@ func (r *Runtime) Start(ctx context.Context, server app.Server, version app.FRPC
 
 	r.mu.Lock()
 	r.cmds[server.ID] = cmd
+	done := make(chan struct{})
+	r.dones[server.ID] = done
 	delete(r.stopping, server.ID)
 	r.mu.Unlock()
 
@@ -118,13 +128,20 @@ func (r *Runtime) Start(ctx context.Context, server app.Server, version app.FRPC
 	go func() {
 		err := cmd.Wait()
 		_ = logFile.Close()
+		close(done)
 		r.mu.Lock()
+		// 仅当退出的进程仍是当前追踪的一代时才清理并通知；
+		// 否则这是重启后旧进程的延迟退出，不能动新进程的状态。
+		current := r.cmds[server.ID] == cmd
 		stopping := r.stopping[server.ID]
-		delete(r.cmds, server.ID)
-		delete(r.stopping, server.ID)
+		if current {
+			delete(r.cmds, server.ID)
+			delete(r.dones, server.ID)
+			delete(r.stopping, server.ID)
+		}
 		handler := r.onExit
 		r.mu.Unlock()
-		if !stopping && handler != nil {
+		if current && !stopping && handler != nil {
 			handler(server.ID, err)
 		}
 	}()
@@ -143,22 +160,42 @@ func (r *Runtime) Stop(_ context.Context, server app.Server, process app.Process
 	r.mu.Lock()
 	r.stopping[server.ID] = true
 	cmd := r.cmds[server.ID]
+	done := r.dones[server.ID]
 	r.mu.Unlock()
 
 	if cmd != nil && cmd.Process != nil {
 		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			return app.ActionResult{OK: false, Message: err.Error()}
 		}
+		// 等待进程真正退出再返回，避免重启时新旧进程并存（admin 端口冲突）。
+		if done != nil {
+			select {
+			case <-done:
+			case <-time.After(stopGraceTimeout):
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+				}
+			}
+		}
 		return app.ActionResult{OK: true, Message: "frpc stopped"}
 	}
 
 	if process.PID > 0 {
-		if err := syscall.Kill(-process.PID, syscall.SIGTERM); err == nil {
-			return app.ActionResult{OK: true, Message: "frpc stopped"}
+		if err := syscall.Kill(-process.PID, syscall.SIGTERM); err != nil {
+			if err := syscall.Kill(process.PID, syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				return app.ActionResult{OK: false, Message: err.Error()}
+			}
 		}
-		if err := syscall.Kill(process.PID, syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			return app.ActionResult{OK: false, Message: err.Error()}
+		deadline := time.Now().Add(stopGraceTimeout)
+		for time.Now().Before(deadline) {
+			if !r.ProcessAlive(context.Background(), process.PID) {
+				return app.ActionResult{OK: true, Message: "frpc stopped"}
+			}
+			time.Sleep(100 * time.Millisecond)
 		}
+		_ = syscall.Kill(-process.PID, syscall.SIGKILL)
 	}
 	return app.ActionResult{OK: true, Message: "frpc stopped"}
 }
@@ -238,9 +275,13 @@ func (r *Runtime) InstallOnline(ctx context.Context, input app.FRPCInstallOnline
 	if resp.StatusCode >= 300 {
 		return app.FRPCVersion{}, fmt.Errorf("download failed: %s", resp.Status)
 	}
-	archive, err := io.ReadAll(resp.Body)
+	// frp 发布包约 10-20MB；限制读取上限，防止恶意代理把内存吃满。
+	archive, err := io.ReadAll(io.LimitReader(resp.Body, maxReleaseArchiveSize+1))
 	if err != nil {
 		return app.FRPCVersion{}, err
+	}
+	if int64(len(archive)) > maxReleaseArchiveSize {
+		return app.FRPCVersion{}, fmt.Errorf("release archive exceeds %d MB limit", maxReleaseArchiveSize/(1<<20))
 	}
 	if err := r.verifyReleaseChecksum(ctx, checksumURL, input.GithubProxy, assetName, archive); err != nil {
 		return app.FRPCVersion{}, err
@@ -263,6 +304,8 @@ func (r *Runtime) InstallOffline(_ context.Context, filename string, file io.Rea
 	if err != nil {
 		return app.FRPCVersion{}, err
 	}
+	// 成功 Rename 后临时文件已不存在，这里的 Remove 只负责清理失败路径。
+	defer func() { _ = os.Remove(tmpPath) }()
 	if _, err := io.Copy(out, file); err != nil {
 		_ = out.Close()
 		return app.FRPCVersion{}, err
@@ -386,7 +429,7 @@ func renderTOML(server app.Server) string {
 	if server.TransportProtocol != "" && server.TransportProtocol != "tcp" {
 		fmt.Fprintf(&b, "transport.protocol = %q\n", server.TransportProtocol)
 	}
-	if server.AuthToken != "" && !strings.Contains(server.AuthToken, "*") {
+	if server.AuthToken != "" && !app.LooksMaskedSecret(server.AuthToken) {
 		fmt.Fprintf(&b, "auth.method = %q\n", "token")
 		fmt.Fprintf(&b, "auth.token = %q\n", server.AuthToken)
 	}
@@ -395,7 +438,7 @@ func renderTOML(server app.Server) string {
 	if server.AdminUser != "" {
 		fmt.Fprintf(&b, "webServer.user = %q\n", server.AdminUser)
 	}
-	if server.AdminPassword != "" && !strings.Contains(server.AdminPassword, "*") {
+	if server.AdminPassword != "" && !app.LooksMaskedSecret(server.AdminPassword) {
 		fmt.Fprintf(&b, "webServer.password = %q\n", server.AdminPassword)
 	}
 	for _, rule := range server.Rules {
@@ -441,7 +484,7 @@ func writeRuleTOML(b *strings.Builder, rule app.ProxyRule) {
 		if rule.HTTPUser != "" {
 			fmt.Fprintf(b, "httpUser = %q\n", rule.HTTPUser)
 		}
-		if rule.HTTPPassword != "" && !strings.Contains(rule.HTTPPassword, "*") {
+		if rule.HTTPPassword != "" && !app.LooksMaskedSecret(rule.HTTPPassword) {
 			fmt.Fprintf(b, "httpPassword = %q\n", rule.HTTPPassword)
 		}
 		for _, header := range headerPairs(rule.RequestHeaders) {
@@ -547,7 +590,8 @@ func collectAdminProxies(value any, typeHint string, out *[]app.AdminProxyStatus
 		for key, child := range typed {
 			nextHint := typeHint
 			lower := strings.ToLower(key)
-			if lower == "tcp" || lower == "udp" || lower == "http" || lower == "https" {
+			switch lower {
+			case "tcp", "udp", "http", "https", "stcp", "xtcp", "sudp":
 				nextHint = lower
 			}
 			if nextHint != typeHint || lower == "proxies" || lower == "status" || lower == "proxy_status" || lower == "proxystatus" {

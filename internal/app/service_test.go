@@ -253,6 +253,44 @@ func TestServiceConfigExportImport(t *testing.T) {
 	}
 }
 
+func TestImportReplaceKeepsConfigWhenBundleInvalid(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	svc := app.NewService(app.Options{Store: store, Runtime: &fakeRuntime{}, Addr: "127.0.0.1:8080"})
+
+	if _, err := svc.CreateServer(ctx, app.ServerInput{
+		Name:       "keep-me",
+		ServerAddr: "frp.example.com",
+		ServerPort: 7000,
+	}); err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	// 名称为空的服务器会校验失败；replace 导入必须在删除现有配置前发现这一点。
+	_, err = svc.ImportConfig(ctx, app.ConfigImportInput{
+		Mode: "replace",
+		Bundle: app.ConfigBundle{
+			Version: 1,
+			Servers: []app.ServerBundle{{Server: app.Server{Name: "", ServerAddr: "x", ServerPort: 7000}}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected import of invalid bundle to fail")
+	}
+
+	servers, err := svc.Servers(ctx)
+	if err != nil {
+		t.Fatalf("list servers: %v", err)
+	}
+	if len(servers) != 1 || servers[0].Name != "keep-me" {
+		t.Fatalf("existing config was destroyed by failed replace import: %#v", servers)
+	}
+}
+
 func TestServiceRejectsInvalidRequestHeader(t *testing.T) {
 	ctx := context.Background()
 	store, err := storage.Open(ctx, t.TempDir())

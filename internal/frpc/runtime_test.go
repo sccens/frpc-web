@@ -12,13 +12,116 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sccens/frpc-web/internal/app"
 )
+
+func writeFakeFRPC(t *testing.T, dir, body string) string {	t.Helper()
+	script := filepath.Join(dir, "fake-frpc")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return script
+}
+
+func TestRenderTOMLKeepsSecretsContainingAsterisk(t *testing.T) {
+	server := app.Server{
+		ServerAddr:    "frps.example.com",
+		ServerPort:    7000,
+		AuthToken:     "tok*en",
+		AdminPort:     7400,
+		AdminPassword: "pa*ss",
+	}
+	content := renderTOML(server)
+	if !strings.Contains(content, `auth.token = "tok*en"`) {
+		t.Fatalf("real token containing one asterisk was dropped:\n%s", content)
+	}
+	if !strings.Contains(content, `webServer.password = "pa*ss"`) {
+		t.Fatalf("real admin password containing one asterisk was dropped:\n%s", content)
+	}
+
+	server.AuthToken = "ab****cd"
+	masked := renderTOML(server)
+	if strings.Contains(masked, "auth.token") {
+		t.Fatalf("masked token leaked into rendered config:\n%s", masked)
+	}
+}
+
+func TestStopWaitsForProcessExit(t *testing.T) {
+	dir := t.TempDir()
+	// 收到 SIGTERM 后延迟退出，模拟 frpc 优雅关闭耗时
+	script := writeFakeFRPC(t, dir, "trap 'sleep 0.3; exit 0' TERM\nwhile :; do sleep 0.1; done\n")
+	r := New(dir)
+	exits := make(chan string, 4)
+	r.SetExitHandler(func(serverID string, err error) { exits <- serverID })
+
+	server := app.Server{ID: "srv-stop"}
+	info, result := r.Start(context.Background(), server, app.FRPCVersion{Path: script, Version: "test"})
+	if !result.OK {
+		t.Fatalf("start failed: %s", result.Message)
+	}
+
+	if res := r.Stop(context.Background(), server, info); !res.OK {
+		t.Fatalf("stop failed: %s", res.Message)
+	}
+	if r.ProcessAlive(context.Background(), info.PID) {
+		t.Fatal("process still alive after Stop returned")
+	}
+	select {
+	case id := <-exits:
+		t.Fatalf("exit handler fired for intentional stop of %s", id)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func TestLateExitOfReplacedProcessDoesNotFireHandler(t *testing.T) {
+	dir := t.TempDir()
+	script := writeFakeFRPC(t, dir, "while :; do sleep 0.1; done\n")
+	r := New(dir)
+	exits := make(chan string, 4)
+	r.SetExitHandler(func(serverID string, err error) { exits <- serverID })
+
+	server := app.Server{ID: "srv-race"}
+	info, result := r.Start(context.Background(), server, app.FRPCVersion{Path: script, Version: "test"})
+	if !result.OK {
+		t.Fatalf("start failed: %s", result.Message)
+	}
+
+	// 模拟重启场景：旧进程还没退出，新一代已经接管追踪表（Start 会覆盖 cmds 并清掉 stopping）
+	next := &exec.Cmd{}
+	r.mu.Lock()
+	r.cmds[server.ID] = next
+	r.dones[server.ID] = make(chan struct{})
+	delete(r.stopping, server.ID)
+	r.mu.Unlock()
+
+	// 旧进程此刻才完成退出
+	_ = syscall.Kill(-info.PID, syscall.SIGTERM)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && r.ProcessAlive(context.Background(), info.PID) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(150 * time.Millisecond)
+
+	select {
+	case id := <-exits:
+		t.Fatalf("late exit of replaced process fired exit handler for %s", id)
+	default:
+	}
+	r.mu.Lock()
+	tracked := r.cmds[server.ID] == next
+	r.mu.Unlock()
+	if !tracked {
+		t.Fatal("late exit of replaced process removed the new generation from tracking")
+	}
+}
 
 func TestRenderConfigTomlReloadAndFileMode(t *testing.T) {
 	rt := New(t.TempDir())
@@ -182,6 +285,40 @@ func TestAdminStatusUsesBasicAuth(t *testing.T) {
 	}
 	if len(status.Proxies) != 1 || status.Proxies[0].TrafficIn != 10 || status.Proxies[0].TrafficOut != 20 {
 		t.Fatalf("unexpected status: %#v", status)
+	}
+}
+
+func TestAdminStatusProxiesCollectsAllProxyTypes(t *testing.T) {
+	payload := map[string]any{
+		"tcp":   []any{map[string]any{"name": "ssh", "status": "online"}},
+		"udp":   []any{map[string]any{"name": "dns", "status": "online"}},
+		"http":  []any{map[string]any{"name": "web", "status": "online"}},
+		"https": []any{map[string]any{"name": "web-tls", "status": "online"}},
+		"stcp":  []any{map[string]any{"name": "secret-svc", "status": "online"}},
+		"xtcp":  []any{map[string]any{"name": "p2p-svc", "status": "online"}},
+		"sudp":  []any{map[string]any{"name": "secret-udp", "status": "online"}},
+	}
+	proxies := adminStatusProxies(payload)
+	types := map[string]string{}
+	for _, proxy := range proxies {
+		types[proxy.Name] = proxy.Type
+	}
+	expected := map[string]string{
+		"ssh":        "tcp",
+		"dns":        "udp",
+		"web":        "http",
+		"web-tls":    "https",
+		"secret-svc": "stcp",
+		"p2p-svc":    "xtcp",
+		"secret-udp": "sudp",
+	}
+	if len(proxies) != len(expected) {
+		t.Fatalf("expected %d proxies, got %d: %#v", len(expected), len(proxies), proxies)
+	}
+	for name, wantType := range expected {
+		if types[name] != wantType {
+			t.Fatalf("proxy %s: expected type %s, got %q", name, wantType, types[name])
+		}
 	}
 }
 
