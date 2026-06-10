@@ -254,6 +254,7 @@ function buildOverviewNodes() {
 
 function buildOverviewEdges() {
   const edges: TopologyEdge[] = []
+  let ruleColorIndex = 0
 
   overviewGroups.value.forEach((group) => {
     edges.push(createEdge(
@@ -272,12 +273,14 @@ function buildOverviewEdges() {
         card.previewRules.forEach((rule) => {
           const localNodeId = getOverviewRuleNodeId('local', card, rule)
           const publicNodeId = getOverviewRuleNodeId('public', card, rule)
+          const color = ruleEdgeColor(ruleColorIndex++)
           edges.push(createEdge(
             `overview-local-frpc-${card.server.id}-${rule.id}`,
             localNodeId,
             'overview-frpc',
             getLocalPortLabel(rule),
             'primary',
+            color,
           ))
           edges.push(createEdge(
             `overview-frps-public-${card.server.id}-${rule.id}`,
@@ -285,6 +288,7 @@ function buildOverviewEdges() {
             publicNodeId,
             getPublicPortLabel(rule),
             'primary',
+            color,
           ))
         })
 
@@ -366,9 +370,10 @@ function buildDetailEdges() {
     edges.push(createEdge('detail-empty-frpc', 'detail-empty', 'detail-frpc', '等待启用', 'muted'))
     edges.push(createEdge('detail-frps-public-empty', 'detail-frps', 'detail-public-empty', '等待入口', 'muted'))
   } else {
-    detailVisibleRules.value.forEach((rule) => {
-      edges.push(createEdge(`detail-local-frpc-${rule.id}`, `detail-local-${rule.id}`, 'detail-frpc', getLocalPortLabel(rule), 'primary'))
-      edges.push(createEdge(`detail-frps-public-${rule.id}`, 'detail-frps', `detail-public-${rule.id}`, getPublicPortLabel(rule), 'primary'))
+    detailVisibleRules.value.forEach((rule, index) => {
+      const color = ruleEdgeColor(index)
+      edges.push(createEdge(`detail-local-frpc-${rule.id}`, `detail-local-${rule.id}`, 'detail-frpc', getLocalPortLabel(rule), 'primary', color))
+      edges.push(createEdge(`detail-frps-public-${rule.id}`, 'detail-frps', `detail-public-${rule.id}`, getPublicPortLabel(rule), 'primary', color))
     })
     if (detailHiddenRules.value > 0) {
       edges.push(createEdge('detail-more-local-frpc', 'detail-more-local', 'detail-frpc', '更多服务', 'muted'))
@@ -413,8 +418,15 @@ function createNode(
   }
 }
 
-function createEdge(id: string, source: string, target: string, label: string, tone: 'primary' | 'success' | 'muted'): TopologyEdge {
-  const markerColor = tone === 'success' ? '#10b981' : tone === 'primary' ? '#2563eb' : '#a1a1aa'
+// 每条规则分配一种专属颜色：本地服务→客户端、服务端→公网入口两段连线同色，便于对应
+const RULE_EDGE_COLORS = ['#2563eb', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316', '#84cc16', '#14b8a6']
+
+function ruleEdgeColor(index: number) {
+  return RULE_EDGE_COLORS[index % RULE_EDGE_COLORS.length]
+}
+
+function createEdge(id: string, source: string, target: string, label: string, tone: 'primary' | 'success' | 'muted', color?: string): TopologyEdge {
+  const markerColor = color ?? (tone === 'success' ? '#10b981' : tone === 'primary' ? '#2563eb' : '#a1a1aa')
   return {
     id,
     source,
@@ -433,10 +445,11 @@ function createEdge(id: string, source: string, target: string, label: string, t
       height: 16,
     },
     class: ['flow-edge', `flow-edge-${tone}`],
+    style: color ? { stroke: color } : undefined,
     labelBgPadding: [7, 4],
     labelBgBorderRadius: 9,
     labelStyle: {
-      fill: 'var(--muted)',
+      fill: color ?? 'var(--muted)',
       fontSize: 11,
       fontWeight: 700,
     },
@@ -492,7 +505,7 @@ function createPublicRuleData(rule: ProxyRule): Omit<TopologyNodeData, 'kind'> {
   return {
     label: '公网访问',
     title: publicEndpoint(rule),
-    subtitle: getPublicEndpointHint(rule),
+    subtitle: rule.name,
     badge: '入口',
   }
 }
@@ -540,11 +553,6 @@ function getPublicPortLabel(rule: ProxyRule) {
   if (rule.remotePort) return `${rule.remotePort} 端口`
   if (rule.bindPort) return `${rule.bindPort} 端口`
   return '等待入口'
-}
-
-function getPublicEndpointHint(rule: ProxyRule) {
-  if (rule.type === 'http' || rule.type === 'https') return '用户通过域名访问'
-  return '用户通过公网端口访问'
 }
 
 function getTransportText(protocol?: string) {
