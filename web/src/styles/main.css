@@ -950,11 +950,13 @@ html[data-theme="dark"] .theme-switch:not(.is-dark) .theme-switch-sun {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .event-item time {
   color: var(--faint);
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .event-level {

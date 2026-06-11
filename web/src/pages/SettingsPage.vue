@@ -35,6 +35,7 @@ import {
   type UpdateCheck,
 } from '../api/client'
 import { errorMessage } from '../utils/errors'
+import { formatTime } from '../utils/time'
 
 const router = useRouter()
 const loading = ref(false)
@@ -661,7 +662,7 @@ function awaitRestartThenReload() {
               </td>
               <td><strong>{{ actionLabel(log.action) }}</strong></td>
               <td><code>{{ log.ip || '-' }}</code></td>
-              <td>{{ log.createdAt }}</td>
+              <td :title="log.createdAt">{{ formatTime(log.createdAt) }}</td>
             </tr>
           </tbody>
         </table>

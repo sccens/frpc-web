@@ -3,6 +3,7 @@ import { onMounted } from 'vue'
 import { AlertTriangle, ArrowRight, CheckCircle2, Network, Route } from 'lucide-vue-next'
 import ServerTable from '../components/ServerTable.vue'
 import { useDashboardStore } from '../stores/dashboard'
+import { formatTime } from '../utils/time'
 
 const store = useDashboardStore()
 
@@ -91,11 +92,12 @@ onMounted(() => {
             <div v-for="event in store.data.health" :key="event.id" class="event-item">
               <span :class="['event-level', `level-${event.level}`]" />
               <div>
-                <strong>{{ event.server }}</strong>
+                <strong>{{ event.server || '系统' }}</strong>
                 <p>{{ event.message }}</p>
               </div>
-              <time>{{ event.createdAt }}</time>
+              <time :title="event.createdAt">{{ formatTime(event.createdAt) }}</time>
             </div>
+            <div v-if="store.data.health.length === 0" class="empty-state">暂无健康事件，一切正常</div>
           </div>
         </section>
       </div>
