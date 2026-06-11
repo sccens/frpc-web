@@ -474,10 +474,8 @@ function awaitRestartThenReload() {
             <p class="overline">{{ item.active ? 'Active' : item.source }}</p>
             <strong>{{ item.version }}</strong>
             <span>{{ item.platform }}/{{ item.arch }}</span>
-            <div class="session-meta">
-              <code>{{ item.path }}</code>
-            </div>
           </div>
+          <code class="version-path">{{ item.path }}</code>
           <button v-if="!item.active" class="ghost-action strong" type="button" @click="activateVersion(item.id)">
             设为默认
           </button>

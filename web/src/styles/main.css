@@ -1359,7 +1359,18 @@ html[data-theme="dark"] .theme-switch:not(.is-dark) .theme-switch-sun {
 }
 
 .version-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 12px;
   align-items: center;
+}
+
+.version-path {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-panel {
