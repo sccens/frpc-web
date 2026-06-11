@@ -1378,6 +1378,161 @@ html[data-theme="dark"] .theme-switch:not(.is-dark) .theme-switch-sun {
   padding: 24px 24px 0;
 }
 
+.system-update-board {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.85fr) minmax(0, 1.15fr) minmax(180px, auto);
+  gap: 16px;
+  align-items: stretch;
+  padding: 18px 24px 24px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.system-update-status {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.64);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    var(--shadow-subtle);
+}
+
+.system-update-status .settings-row-copy span {
+  overflow-wrap: anywhere;
+}
+
+.system-update-indicator {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  color: var(--faint);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(250, 250, 250, 0.86);
+}
+
+.system-update-indicator span {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.system-update-status.status-current .system-update-indicator {
+  color: var(--green);
+}
+
+.system-update-status.status-available .system-update-indicator {
+  color: var(--blue);
+}
+
+.system-update-status.status-warning .system-update-indicator {
+  color: var(--amber);
+}
+
+.system-update-status.status-checking .system-update-indicator {
+  color: var(--blue);
+}
+
+.system-update-status.status-current .system-update-indicator span,
+.system-update-status.status-available .system-update-indicator span,
+.system-update-status.status-warning .system-update-indicator span,
+.system-update-status.status-checking .system-update-indicator span {
+  box-shadow: 0 0 14px currentColor;
+}
+
+.system-version-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.system-version-item {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  min-height: 114px;
+  padding: 14px;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.64);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    var(--shadow-subtle);
+}
+
+.system-version-item span {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.system-version-item strong {
+  display: block;
+  margin-top: 10px;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 17px;
+  line-height: 1.3;
+}
+
+.system-version-item small {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.system-version-link {
+  transition:
+    transform 120ms ease,
+    border-color 180ms ease,
+    background 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.system-version-link:hover {
+  transform: translateY(-1px);
+  border-color: rgba(161, 161, 170, 0.7);
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.system-update-actions {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 180px;
+}
+
+.system-update-actions .primary-action,
+.system-update-actions .ghost-action {
+  width: 100%;
+  min-height: 40px;
+}
+
+.system-update-note {
+  margin: 0;
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.spin-icon {
+  animation: spin 900ms linear infinite;
+}
+
 .security-band {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

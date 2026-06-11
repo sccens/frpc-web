@@ -309,6 +309,52 @@ const updateInfo = ref<UpdateCheck | null>(null)
 const updateChecking = ref(false)
 const updating = ref(false)
 
+const updateState = computed(() => {
+  if (updateChecking.value) {
+    return {
+      eyebrow: 'Checking',
+      title: '正在检查更新',
+      description: '正在连接 GitHub Releases 获取最新发布版本。',
+      tone: 'checking',
+    }
+  }
+
+  const info = updateInfo.value
+  if (!info) {
+    return {
+      eyebrow: 'Status',
+      title: '等待检查',
+      description: '点击检查更新获取 frpc-web 最新 Release。',
+      tone: 'idle',
+    }
+  }
+
+  if (info.hasUpdate && !info.canApply) {
+    return {
+      eyebrow: 'Manual Update',
+      title: `发现新版本 ${info.latest}`,
+      description: info.applyHint || '当前环境需要手动升级。',
+      tone: 'warning',
+    }
+  }
+
+  if (info.hasUpdate) {
+    return {
+      eyebrow: 'Update Available',
+      title: `发现新版本 ${info.latest}`,
+      description: '更新会下载新版本并校验 SHA256，随后原地重启服务，运行中的隧道不会中断。',
+      tone: 'available',
+    }
+  }
+
+  return {
+    eyebrow: 'Up To Date',
+    title: '已是最新版本',
+    description: '当前版本不低于 GitHub 最新发布版本。',
+    tone: 'current',
+  }
+})
+
 async function checkForUpdate(silent = false) {
   updateChecking.value = true
   try {
@@ -500,16 +546,47 @@ function awaitRestartThenReload() {
         <div>
           <p class="overline">System</p>
           <h2>系统更新</h2>
-          <span v-if="updateInfo">
-            当前版本 {{ updateInfo.current }} · 最新版本
-            <a :href="updateInfo.notesUrl" target="_blank" rel="noopener">{{ updateInfo.latest }}</a>
-          </span>
-          <span v-else>frpc-web 自身的版本管理</span>
+          <span>frpc-web 自身的版本检查与一键更新</span>
         </div>
-        <div class="row-actions">
+      </div>
+
+      <div class="system-update-board">
+        <div class="system-version-grid">
+          <div class="system-version-item">
+            <span>当前版本</span>
+            <strong>{{ updateInfo?.current || '读取中' }}</strong>
+          </div>
+          <a
+            v-if="updateInfo"
+            class="system-version-item system-version-link"
+            :href="updateInfo.notesUrl"
+            target="_blank"
+            rel="noopener"
+          >
+            <span>最新版本</span>
+            <strong>{{ updateInfo.latest }}</strong>
+            <small>查看发布说明</small>
+          </a>
+          <div v-else class="system-version-item">
+            <span>最新版本</span>
+            <strong>待检查</strong>
+            <small>检查后显示</small>
+          </div>
+        </div>
+
+        <div class="system-update-status" :class="`status-${updateState.tone}`">
+          <span class="system-update-indicator"><span /></span>
+          <div class="settings-row-copy">
+            <p class="overline">{{ updateState.eyebrow }}</p>
+            <strong>{{ updateState.title }}</strong>
+            <span>{{ updateState.description }}</span>
+          </div>
+        </div>
+
+        <div class="system-update-actions">
           <button class="ghost-action strong" type="button" :disabled="updateChecking" @click="checkForUpdate()">
-            <RefreshCw :size="15" :stroke-width="1.8" />
-            检查更新
+            <RefreshCw :size="15" :stroke-width="1.8" :class="{ 'spin-icon': updateChecking }" />
+            {{ updateChecking ? '检查中…' : '检查更新' }}
           </button>
           <button
             v-if="updateInfo?.hasUpdate && updateInfo?.canApply"
@@ -521,11 +598,10 @@ function awaitRestartThenReload() {
             <Download :size="15" :stroke-width="1.8" />
             {{ updating ? '更新中…' : `一键更新到 ${updateInfo.latest}` }}
           </button>
+          <p v-else-if="updateInfo?.hasUpdate && !updateInfo.canApply" class="system-update-note">需要手动更新</p>
+          <p v-else-if="updateInfo" class="system-update-note">无需操作</p>
         </div>
       </div>
-      <p v-if="updateInfo?.hasUpdate && !updateInfo.canApply" class="muted-inline">{{ updateInfo.applyHint }}</p>
-      <p v-else-if="updateInfo?.hasUpdate" class="muted-inline">更新会下载新版本并校验 SHA256，随后原地重启服务，运行中的隧道不会中断。</p>
-      <p v-else-if="updateInfo" class="muted-inline">已是最新版本。</p>
     </section>
 
     <section class="surface-panel">
