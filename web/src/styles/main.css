@@ -1358,19 +1358,12 @@ html[data-theme="dark"] .theme-switch:not(.is-dark) .theme-switch-sun {
   border-left: 1px solid var(--line-soft);
 }
 
-.version-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+/* 写成 .session-row.version-row 提高特异性：单独的 .version-row 会被
+   文件后方的 .session-row（36px 图标列网格）按级联顺序覆盖。 */
+.session-row.version-row {
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
-}
-
-.version-path {
-  color: var(--muted);
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .settings-panel {
@@ -2862,11 +2855,13 @@ html[data-theme="dark"] .el-button--primary {
   }
 
   .control-preview-grid,
-  .session-row {
+  .session-row,
+  .session-row.version-row {
     grid-template-columns: 1fr;
   }
 
-  .session-row .icon-button {
+  .session-row .icon-button,
+  .session-row.version-row .ghost-action {
     width: 100%;
   }
 }

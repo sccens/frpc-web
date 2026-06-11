@@ -425,7 +425,7 @@ function awaitRestartThenReload() {
         <div>
           <p class="overline">Binary</p>
           <h2>frpc 版本</h2>
-          <span>{{ version?.path || '尚未安装' }}</span>
+          <span>{{ version?.installed ? `当前使用 ${version.version}` : '尚未安装，可在线安装或上传离线包' }}</span>
         </div>
         <div class="toolbar clean">
           <label class="search-box version-input">
@@ -473,9 +473,11 @@ function awaitRestartThenReload() {
           <div class="settings-row-copy">
             <p class="overline">{{ item.active ? 'Active' : item.source }}</p>
             <strong>{{ item.version }}</strong>
-            <span>{{ item.platform }}/{{ item.arch }}</span>
+            <div class="session-meta">
+              <code>{{ item.platform }}/{{ item.arch }}</code>
+              <code class="version-path" :title="item.path">{{ item.path }}</code>
+            </div>
           </div>
-          <code class="version-path">{{ item.path }}</code>
           <button v-if="!item.active" class="ghost-action strong" type="button" @click="activateVersion(item.id)">
             设为默认
           </button>
