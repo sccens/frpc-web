@@ -1,5 +1,31 @@
 # Changelog
 
+## [v1.1.3]
+
+### Fixed
+- **设置页版本列表排版**：v1.1.1 的布局修复因 CSS 级联顺序失效（`.version-row` 被文件后方的
+  `.session-row` 三列网格覆盖），版本信息被挤进 36px 图标列竖向堆叠；现以 `.session-row.version-row`
+  提高特异性根治，版本行改为「眉标 + 版本号 + 平台/路径胶囊」布局，路径超长自动截断（悬停显示全文），
+  移动端折叠为单列
+- **静态资源缓存策略**：此前所有静态文件不带任何缓存头（embed 文件无 Last-Modified）。
+  现 `index.html`（含 SPA 路由回退）返回 `Cache-Control: no-cache`，杜绝自更新后浏览器渲染旧页面；
+  带内容哈希的 `assets/*` 返回 `public, max-age=31536000, immutable`，不再每次访问全量重下
+
+### Changed
+- **设置页**：frpc 版本面板副标题由完整安装路径改为「当前使用 x.y.z」，未安装时提示可在线安装或上传
+
+## [v1.1.2]
+
+### Added
+- **忘记密码自助重置**：新增 `FRPC_WEB_RESET_KEY` 环境变量，设为 `1` 启动会清空访问密钥并退出，
+  之后正常启动即可重新设置；README 补充 systemd 与手动运行的操作步骤
+
+## [v1.1.1]
+
+### Changed
+- **设置页**：系统更新与 Active 版本卡片排版调整（其中版本行布局因 CSS 级联问题未实际生效，
+  v1.1.3 已根治）
+
 ## [v1.1.0]
 
 ### Added
@@ -21,7 +47,7 @@
 - **流量看板**：frp 客户端接口不提供流量统计（流量数据只存在于 frps 服务端），图表永远无数据，
   整页移除；同时移除 `/api/stats`、Admin API 状态采集和 echarts 依赖（前端体积 -529KB）
 
-## [Unreleased]
+## [v1.0.0]
 
 ### Changed
 - **存储引擎**：SQLite → JSON 状态文件（`state.json`）
