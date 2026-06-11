@@ -473,6 +473,17 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
+// setStaticCacheHeaders 设置静态资源缓存策略：Vite 产物 assets/ 下文件名带内容
+// 哈希，可长期缓存；其余文件（index.html、favicon 等）路径固定，必须每次回源
+// 校验，否则自更新替换二进制后浏览器可能继续渲染旧页面。
+func setStaticCacheHeaders(w http.ResponseWriter, cleanPath string) {
+	if strings.HasPrefix(cleanPath, "assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-cache")
+}
+
 func staticHandler(webDir string, webFS http.FileSystem) http.Handler {
 	if webDir != "" {
 		return staticDirHandler(webDir)
@@ -495,10 +506,12 @@ func staticDirHandler(webDir string) http.Handler {
 		path := filepath.Join(webDir, cleanPath)
 		info, err := os.Stat(path)
 		if r.URL.Path == "/" || err != nil || info.IsDir() {
+			setStaticCacheHeaders(w, "index.html")
 			http.ServeFile(w, r, filepath.Join(webDir, "index.html"))
 			return
 		}
 
+		setStaticCacheHeaders(w, cleanPath)
 		fileServer.ServeHTTP(w, r)
 	})
 }
@@ -528,11 +541,13 @@ func staticFSHandler(webFS http.FileSystem) http.Handler {
 			return
 		}
 
+		setStaticCacheHeaders(w, cleanPath)
 		fileServer.ServeHTTP(w, r)
 	})
 }
 
 func serveIndexFromFS(w http.ResponseWriter, r *http.Request, webFS http.FileSystem) {
+	setStaticCacheHeaders(w, "index.html")
 	file, err := webFS.Open("index.html")
 	if err != nil {
 		writeError(w, http.StatusNotFound, "frontend index not found")

@@ -6,7 +6,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	"github.com/sccens/frpc-web/internal/app"
 	"github.com/sccens/frpc-web/internal/storage"
@@ -152,6 +155,59 @@ func TestSessionCookieSecureBehindTrustedHTTPSProxy(t *testing.T) {
 	}
 	if !cookies[0].Secure {
 		t.Fatalf("session cookie should be secure behind trusted HTTPS proxy: %#v", cookies[0])
+	}
+}
+
+func TestStaticCacheHeaders(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	svc := app.NewService(app.Options{Store: store, Runtime: &serverFakeRuntime{}, Addr: "127.0.0.1:8080"})
+
+	webDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(webDir, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<html>ok</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(webDir, "assets", "app-abc123.js"), []byte("console.log(1)"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	embedded := http.FS(fstest.MapFS{
+		"index.html":           &fstest.MapFile{Data: []byte("<html>ok</html>")},
+		"assets/app-abc123.js": &fstest.MapFile{Data: []byte("console.log(1)")},
+	})
+
+	handlers := map[string]http.Handler{
+		"dir": New(Options{Service: svc, WebDir: webDir}),
+		"fs":  New(Options{Service: svc, WebFS: embedded}),
+	}
+
+	const immutable = "public, max-age=31536000, immutable"
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"/", "no-cache"},
+		{"/servers", "no-cache"},             // SPA 路由回退 index.html
+		{"/assets/app-abc123.js", immutable}, // 文件名带内容哈希，可长缓存
+		{"/assets/gone-xyz.js", "no-cache"},  // 旧资源缺失时回退 index.html，不能继承长缓存
+	}
+	for name, handler := range handlers {
+		for _, tc := range cases {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("[%s] GET %s status = %d, body = %s", name, tc.path, rec.Code, rec.Body.String())
+			}
+			if got := rec.Header().Get("Cache-Control"); got != tc.want {
+				t.Fatalf("[%s] GET %s Cache-Control = %q, want %q", name, tc.path, got, tc.want)
+			}
+		}
 	}
 }
 
