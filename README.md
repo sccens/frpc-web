@@ -62,6 +62,7 @@ docker compose up -d
 | `FRPC_WEB_ADDR` | `127.0.0.1:8080` | Web 监听地址 |
 | `FRPC_WEB_DATA_DIR` | `frpc-web-data` | 状态文件、frpc 二进制、配置和日志目录 |
 | `FRPC_WEB_ACCESS_KEY` | 空 | 单管理员访问密钥 |
+| `FRPC_WEB_RESET_KEY` | 空 | 设为 `1` 启动时清空访问密钥并退出（忘记密码时用） |
 | `FRPC_WEB_GITHUB_PROXY` | 空 | 默认 GitHub 下载代理 |
 | `FRPC_WEB_TRUSTED_PROXY` | 空 | 信任代理转发的客户端 IP：`1/true/yes/on` |
 | `FRPC_WEB_WEB_DIR` | 空 | 外部前端静态目录，仅开发排障用 |
@@ -73,6 +74,22 @@ export FRPC_WEB_ADDR=127.0.0.1:8080
 export FRPC_WEB_DATA_DIR=/opt/frpc-web/data
 export FRPC_WEB_ACCESS_KEY=change-me-to-a-long-random-key
 ```
+
+### 忘记密码
+
+使用 `FRPC_WEB_RESET_KEY=1` 启动可清空访问密钥：
+
+```bash
+# systemd 服务
+sudo systemctl stop frpc-web
+FRPC_WEB_RESET_KEY=1 /usr/local/bin/frpc-web
+sudo systemctl start frpc-web
+
+# 手动运行
+FRPC_WEB_RESET_KEY=1 frpc-web
+```
+
+重启后访问 Web 界面会回到首次设置页面，可以重新设置新密钥。
 
 ## 部署
 

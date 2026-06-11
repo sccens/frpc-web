@@ -44,6 +44,15 @@ func main() {
 	}
 	defer store.Close()
 
+	if truthy(os.Getenv("FRPC_WEB_RESET_KEY")) {
+		if err := store.SetSetting(ctx, "access_key_hash", ""); err != nil {
+			logger.Error("reset access key failed", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("access key has been reset; restart without FRPC_WEB_RESET_KEY=1 to bootstrap")
+		return
+	}
+
 	runtime := frpc.New(dataDir)
 	svc := app.NewService(app.Options{
 		Store:   store,
