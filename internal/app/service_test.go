@@ -307,10 +307,12 @@ func TestIsValidHeaderName(t *testing.T) {
 }
 
 type fakeRuntime struct {
-	latest       string
-	latestProxy  string
-	installInput app.FRPCInstallOnlineInput
-	alive        bool
+	latest        string
+	latestProxy   string
+	installInput  app.FRPCInstallOnlineInput
+	alive         bool
+	proxyStatuses []app.ProxyStatus
+	proxyErr      error
 }
 
 func (r *fakeRuntime) RenderConfig(context.Context, app.Server) (app.ConfigPreview, error) {
@@ -359,6 +361,13 @@ func (r *fakeRuntime) LatestVersion(_ context.Context, githubProxy string) (stri
 		return "0.70.0", nil
 	}
 	return r.latest, nil
+}
+
+func (r *fakeRuntime) ProxyStatus(context.Context, app.Server) ([]app.ProxyStatus, error) {
+	if r.proxyErr != nil {
+		return nil, r.proxyErr
+	}
+	return r.proxyStatuses, nil
 }
 
 func (r *fakeRuntime) ProcessAlive(context.Context, int) bool {

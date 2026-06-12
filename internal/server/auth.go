@@ -158,6 +158,12 @@ func auditMetaFor(r *http.Request) (auditMeta, bool) {
 		return auditMeta{"config.export", "config", ""}, true
 	case path == "/api/config/import" && method == http.MethodPost:
 		return auditMeta{"config.import", "config", ""}, true
+	case path == "/api/backups" && method == http.MethodPost:
+		return auditMeta{"backup.create", "backup", ""}, true
+	case len(parts) == 3 && parts[1] == "backups" && method == http.MethodGet:
+		return auditMeta{"backup.download", "backup", part(parts, 2)}, true
+	case len(parts) == 4 && parts[1] == "backups" && parts[3] == "restore" && method == http.MethodPost:
+		return auditMeta{"backup.restore", "backup", part(parts, 2)}, true
 	case path == "/api/auth/access-key" && method == http.MethodPost:
 		return auditMeta{"auth.access_key", "settings", "access_key"}, true
 	case path == "/api/audit-logs" && method == http.MethodDelete:

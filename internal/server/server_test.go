@@ -290,6 +290,10 @@ func (r *serverFakeRuntime) LatestVersion(context.Context, string) (string, erro
 	return "0.70.0", nil
 }
 
+func (r *serverFakeRuntime) ProxyStatus(context.Context, app.Server) ([]app.ProxyStatus, error) {
+	return []app.ProxyStatus{}, nil
+}
+
 func (r *serverFakeRuntime) ProcessAlive(context.Context, int) bool {
 	return r.alive
 }

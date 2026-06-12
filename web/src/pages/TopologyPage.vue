@@ -1,12 +1,19 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Handle, MarkerType, Position, VueFlow, type Edge, type Node } from '@vue-flow/core'
 import { Controls } from '@vue-flow/controls'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 import '@vue-flow/controls/dist/style.css'
 import { Box, Network, Route, Server } from 'lucide-vue-next'
-import { getServers, type ProxyRule, type Server as ServerType } from '../api/client'
+import {
+  getProxiesStatus,
+  getServers,
+  type ProxyRule,
+  type ProxyStatus,
+  type Server as ServerType,
+  type ServerProxyStatus,
+} from '../api/client'
 import { errorMessage } from '../utils/errors'
 
 const ALL_SERVERS = '__all__'
@@ -15,6 +22,7 @@ const MAX_OVERVIEW_RULES = 4
 const OVERVIEW_ROW_GAP = 104
 const OVERVIEW_GROUP_GAP = 72
 const DETAIL_ROW_GAP = 112
+const STATUS_POLL_INTERVAL = 3000
 
 type TopologyNodeKind = 'local-service' | 'public-entry' | 'frpc' | 'frps' | 'more' | 'empty'
 
@@ -25,6 +33,10 @@ interface TopologyNodeData {
   subtitle?: string
   status?: string
   badge?: string
+  // 实时状态查询键：节点数组保持静态（避免轮询打断拖拽布局），
+  // 徽标在渲染时按键从 proxyStatuses 反查。
+  serverId?: string
+  ruleName?: string
 }
 
 type TopologyNode = Node<TopologyNodeData, any, 'topology'>
@@ -53,10 +65,52 @@ const loading = ref(false)
 const error = ref('')
 const servers = ref<ServerType[]>([])
 const selectedServer = ref(ALL_SERVERS)
+const proxyStatuses = ref<Map<string, ServerProxyStatus>>(new Map())
+const statusLive = ref(false)
+let statusTimer: number | undefined
 
 onMounted(() => {
   void load()
+  startStatusPolling()
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 })
+
+onBeforeUnmount(() => {
+  stopStatusPolling()
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+})
+
+// 仅在页面可见时轮询；切到后台暂停，回来立即刷新一次。
+function handleVisibilityChange() {
+  if (document.hidden) {
+    stopStatusPolling()
+  } else {
+    startStatusPolling()
+  }
+}
+
+function startStatusPolling() {
+  if (statusTimer !== undefined) return
+  void refreshProxyStatuses()
+  statusTimer = window.setInterval(() => void refreshProxyStatuses(), STATUS_POLL_INTERVAL)
+}
+
+function stopStatusPolling() {
+  if (statusTimer === undefined) return
+  window.clearInterval(statusTimer)
+  statusTimer = undefined
+}
+
+async function refreshProxyStatuses() {
+  try {
+    const list = await getProxiesStatus()
+    proxyStatuses.value = new Map(list.map((item) => [item.serverId, item]))
+    statusLive.value = true
+  } catch {
+    // 轮询失败不打扰用户，拓扑退化为静态配置视图
+    statusLive.value = false
+  }
+}
 
 async function load() {
   loading.value = true
@@ -350,6 +404,7 @@ function buildDetailNodes() {
     subtitle: `连接到 ${getServerEndpoint(currentServer.value)}`,
     status: currentServer.value.status,
     badge: getStatusText(currentServer.value.status),
+    serverId: currentServer.value.id,
   }, 220))
 
   nodes.push(createNode('detail-frps', 'frps', 660, centerY, {
@@ -498,6 +553,56 @@ function createLocalRuleData(rule: ProxyRule): Omit<TopologyNodeData, 'kind'> {
     title: rule.name,
     subtitle: `${localEndpoint(rule)}`,
     badge: getRuleTypeText(rule),
+    serverId: rule.serverId,
+    ruleName: rule.name,
+  }
+}
+
+interface LiveBadge {
+  tone: 'ok' | 'warn' | 'error' | 'muted'
+  text: string
+  err?: string
+}
+
+// 返回 0 或 1 个元素的数组，模板里用 v-for 解构，避免重复调用。
+function liveBadgesFor(data: TopologyNodeData): LiveBadge[] {
+  if (!data.serverId) return []
+  const serverStatus = proxyStatuses.value.get(data.serverId)
+  if (!serverStatus) return []
+
+  if (data.kind === 'frpc') {
+    if (!serverStatus.running) return [{ tone: 'muted', text: '进程未运行' }]
+    if (serverStatus.error) return [{ tone: 'warn', text: '实时状态不可用', err: serverStatus.error }]
+    const total = serverStatus.proxies.length
+    const running = serverStatus.proxies.filter((proxy) => proxy.phase === 'running').length
+    if (total === 0) return [{ tone: 'muted', text: '无活动代理' }]
+    return [{ tone: running === total ? 'ok' : 'warn', text: `${running}/${total} 代理运行中` }]
+  }
+
+  if (data.kind !== 'local-service' || !data.ruleName) return []
+  if (!serverStatus.running) return [{ tone: 'muted', text: '进程未运行' }]
+  if (serverStatus.error) return [{ tone: 'warn', text: '实时状态不可用', err: serverStatus.error }]
+  const proxy = serverStatus.proxies.find((item) => item.name === data.ruleName)
+  // visitor 等类型不会出现在 frpc /api/status 中，保持纯配置展示。
+  if (!proxy) return []
+  return [livePhaseBadge(proxy)]
+}
+
+function livePhaseBadge(proxy: ProxyStatus): LiveBadge {
+  switch (proxy.phase) {
+    case 'running':
+      return { tone: 'ok', text: '运行中' }
+    case 'start error':
+      return { tone: 'error', text: '启动失败', err: proxy.err }
+    case 'check failed':
+      return { tone: 'error', text: '健康检查未通过', err: proxy.err }
+    case 'new':
+    case 'wait start':
+      return { tone: 'warn', text: '等待启动', err: proxy.err }
+    case 'closed':
+      return { tone: 'muted', text: '已关闭', err: proxy.err }
+    default:
+      return { tone: 'warn', text: proxy.phase, err: proxy.err }
   }
 }
 
@@ -632,7 +737,10 @@ function formatEndpoint(addr: string, port: number | string) {
           <h2>{{ flowTitle }}</h2>
           <span>{{ flowDescription }}</span>
         </div>
-        <span class="fleet-badge">{{ flowNodes.length }} 个节点 · {{ flowEdges.length }} 条连线</span>
+        <span class="fleet-badge">
+          {{ flowNodes.length }} 个节点 · {{ flowEdges.length }} 条连线
+          <em class="fleet-live" :class="{ off: !statusLive }">{{ statusLive ? '实时' : '离线' }}</em>
+        </span>
       </div>
 
       <div class="topology-flow-shell" :style="{ height: flowHeight }">
@@ -674,6 +782,18 @@ function formatEndpoint(addr: string, port: number | string) {
                   <span v-if="data.subtitle">{{ data.subtitle }}</span>
                 </div>
                 <span v-if="data.badge" class="status-chip compact">{{ data.badge }}</span>
+              </div>
+
+              <div
+                v-for="live in liveBadgesFor(data)"
+                :key="live.text"
+                class="flow-live"
+                :class="`flow-live-${live.tone}`"
+                :title="live.err || live.text"
+              >
+                <span class="flow-live-dot" />
+                <span class="flow-live-text">{{ live.text }}</span>
+                <span v-if="live.err" class="flow-live-err">{{ live.err }}</span>
               </div>
 
             </article>
@@ -1008,6 +1128,95 @@ function formatEndpoint(addr: string, port: number | string) {
   font-size: 11px;
 }
 
+.fleet-live {
+  margin-left: 7px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.14);
+  color: #047857;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 760;
+}
+
+.fleet-live.off {
+  background: rgba(161, 161, 170, 0.16);
+  color: var(--muted);
+}
+
+.flow-live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 9px;
+  padding: 5px 9px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.flow-live-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.flow-live-text {
+  flex: 0 0 auto;
+}
+
+.flow-live-err {
+  flex: 1 1 auto;
+  overflow: hidden;
+  font-weight: 600;
+  opacity: 0.82;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-live-ok {
+  color: #047857;
+  border-color: rgba(16, 185, 129, 0.26);
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.flow-live-ok .flow-live-dot {
+  animation: live-pulse 2s ease-out infinite;
+}
+
+.flow-live-error {
+  color: #b91c1c;
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.flow-live-warn {
+  color: #b45309;
+  border-color: rgba(245, 158, 11, 0.32);
+  background: rgba(245, 158, 11, 0.13);
+}
+
+.flow-live-muted {
+  color: var(--muted);
+  border-color: rgba(161, 161, 170, 0.28);
+  background: rgba(161, 161, 170, 0.12);
+}
+
+@keyframes live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 5px rgba(16, 185, 129, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+
 @keyframes flow-dash {
   from {
     stroke-dashoffset: 16;
@@ -1026,6 +1235,19 @@ html[data-theme="dark"] .topology-flow-shell {
 
 html[data-theme="dark"] .flow-card {
   background: rgba(24, 24, 27, 0.76);
+}
+
+html[data-theme="dark"] .flow-live-ok,
+html[data-theme="dark"] .fleet-live:not(.off) {
+  color: #34d399;
+}
+
+html[data-theme="dark"] .flow-live-error {
+  color: #f87171;
+}
+
+html[data-theme="dark"] .flow-live-warn {
+  color: #fbbf24;
 }
 
 @media (max-width: 720px) {

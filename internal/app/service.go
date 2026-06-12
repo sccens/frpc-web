@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -60,6 +61,7 @@ type Runtime interface {
 	Stop(ctx context.Context, server Server, process ProcessInfo) ActionResult
 	Reload(ctx context.Context, server Server, version FRPCVersion) ActionResult
 	Logs(ctx context.Context, serverID string, tail int) ([]LogLine, error)
+	ProxyStatus(ctx context.Context, server Server) ([]ProxyStatus, error)
 	InstallOnline(ctx context.Context, input FRPCInstallOnlineInput) (FRPCVersion, error)
 	InstallOffline(ctx context.Context, filename string, file io.Reader) (FRPCVersion, error)
 	LatestVersion(ctx context.Context, githubProxy string) (string, error)
@@ -371,8 +373,12 @@ func (s *Service) Settings(ctx context.Context) (Settings, error) {
 		return Settings{}, err
 	}
 	return Settings{
-		Addr:        s.addr,
-		GithubProxy: strings.TrimSpace(githubProxy),
+		Addr:                    s.addr,
+		GithubProxy:             strings.TrimSpace(githubProxy),
+		AutoBackupEnabled:       s.settingBool(ctx, settingAutoBackupEnabled),
+		AutoBackupIntervalHours: s.settingInt(ctx, settingAutoBackupInterval, defaultAutoBackupIntervalHours, 1, maxAutoBackupIntervalHours),
+		AutoBackupMaxFiles:      s.settingInt(ctx, settingAutoBackupMaxFiles, defaultAutoBackupMaxFiles, 1, maxAutoBackupMaxFiles),
+		LastAutoBackupAt:        s.settingString(ctx, settingAutoBackupLastAt),
 	}, nil
 }
 
@@ -380,7 +386,54 @@ func (s *Service) UpdateSettings(ctx context.Context, input SettingsInput) (Sett
 	if err := s.store.SetSetting(ctx, "github_proxy", strings.TrimSpace(input.GithubProxy)); err != nil {
 		return Settings{}, err
 	}
+	if input.AutoBackupEnabled != nil {
+		value := "0"
+		if *input.AutoBackupEnabled {
+			value = "1"
+		}
+		if err := s.store.SetSetting(ctx, settingAutoBackupEnabled, value); err != nil {
+			return Settings{}, err
+		}
+	}
+	if input.AutoBackupIntervalHours != nil {
+		if *input.AutoBackupIntervalHours < 1 || *input.AutoBackupIntervalHours > maxAutoBackupIntervalHours {
+			return Settings{}, invalidInput(fmt.Errorf("auto backup interval must be between 1 and %d hours", maxAutoBackupIntervalHours))
+		}
+		if err := s.store.SetSetting(ctx, settingAutoBackupInterval, strconv.Itoa(*input.AutoBackupIntervalHours)); err != nil {
+			return Settings{}, err
+		}
+	}
+	if input.AutoBackupMaxFiles != nil {
+		if *input.AutoBackupMaxFiles < 1 || *input.AutoBackupMaxFiles > maxAutoBackupMaxFiles {
+			return Settings{}, invalidInput(fmt.Errorf("auto backup max files must be between 1 and %d", maxAutoBackupMaxFiles))
+		}
+		if err := s.store.SetSetting(ctx, settingAutoBackupMaxFiles, strconv.Itoa(*input.AutoBackupMaxFiles)); err != nil {
+			return Settings{}, err
+		}
+	}
 	return s.Settings(ctx)
+}
+
+func (s *Service) settingBool(ctx context.Context, key string) bool {
+	value, err := s.store.GetSetting(ctx, key)
+	return err == nil && value == "1"
+}
+
+func (s *Service) settingInt(ctx context.Context, key string, fallback, min, max int) int {
+	value, err := s.store.GetSetting(ctx, key)
+	if err != nil {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed < min || parsed > max {
+		return fallback
+	}
+	return parsed
+}
+
+func (s *Service) settingString(ctx context.Context, key string) string {
+	value, _ := s.store.GetSetting(ctx, key)
+	return value
 }
 
 func (s *Service) Servers(ctx context.Context) ([]Server, error) {
@@ -1317,4 +1370,3 @@ func sessionExpired(expiresAt string) bool {
 func subtleEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
-

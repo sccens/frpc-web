@@ -16,12 +16,21 @@ type Summary struct {
 }
 
 type Settings struct {
-	Addr        string `json:"addr"`
-	GithubProxy string `json:"githubProxy"`
+	Addr                    string `json:"addr"`
+	GithubProxy             string `json:"githubProxy"`
+	AutoBackupEnabled       bool   `json:"autoBackupEnabled"`
+	AutoBackupIntervalHours int    `json:"autoBackupIntervalHours"`
+	AutoBackupMaxFiles      int    `json:"autoBackupMaxFiles"`
+	LastAutoBackupAt        string `json:"lastAutoBackupAt,omitempty"`
 }
 
+// SettingsInput 的自动备份字段用指针区分「未提交」与「显式设置」，
+// 旧客户端只更新 githubProxy 时不会把备份设置重置为零值。
 type SettingsInput struct {
-	GithubProxy string `json:"githubProxy"`
+	GithubProxy             string `json:"githubProxy"`
+	AutoBackupEnabled       *bool  `json:"autoBackupEnabled,omitempty"`
+	AutoBackupIntervalHours *int   `json:"autoBackupIntervalHours,omitempty"`
+	AutoBackupMaxFiles      *int   `json:"autoBackupMaxFiles,omitempty"`
 }
 
 type AuthInput struct {
@@ -244,6 +253,35 @@ type ServerBundle struct {
 type ConfigImportInput struct {
 	Mode   string       `json:"mode"`
 	Bundle ConfigBundle `json:"bundle"`
+}
+
+type BackupFile struct {
+	Name      string `json:"name"`
+	Size      int64  `json:"size"`
+	CreatedAt string `json:"createdAt"`
+}
+
+type BackupRestoreInput struct {
+	Mode string `json:"mode"`
+}
+
+// ProxyStatus 是 frpc admin API /api/status 返回的单条 proxy 实时状态。
+// Phase 取值来自 frp：new / wait start / start error / running / check failed / closed。
+type ProxyStatus struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Phase      string `json:"phase"`
+	Err        string `json:"err,omitempty"`
+	LocalAddr  string `json:"localAddr,omitempty"`
+	Plugin     string `json:"plugin,omitempty"`
+	RemoteAddr string `json:"remoteAddr,omitempty"`
+}
+
+type ServerProxyStatus struct {
+	ServerID string        `json:"serverId"`
+	Running  bool          `json:"running"`
+	Error    string        `json:"error,omitempty"`
+	Proxies  []ProxyStatus `json:"proxies"`
 }
 
 type LogLine struct {

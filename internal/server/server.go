@@ -50,6 +50,11 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("PUT /api/settings", api.updateSettings)
 	mux.HandleFunc("GET /api/config/export", api.exportConfig)
 	mux.HandleFunc("POST /api/config/import", api.importConfig)
+	mux.HandleFunc("GET /api/backups", api.listBackups)
+	mux.HandleFunc("POST /api/backups", api.createBackup)
+	mux.HandleFunc("GET /api/backups/{name}", api.downloadBackup)
+	mux.HandleFunc("POST /api/backups/{name}/restore", api.restoreBackup)
+	mux.HandleFunc("GET /api/proxies/status", api.proxiesStatus)
 	mux.HandleFunc("GET /api/servers", api.listServers)
 	mux.HandleFunc("POST /api/servers", api.createServer)
 	mux.HandleFunc("GET /api/servers/{id}", api.getServer)
@@ -174,7 +179,8 @@ func (h apiHandler) changeAccessKey(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, map[string]bool{"ok": true}, err)
 }
 
-func (h apiHandler) auditLogs(w http.ResponseWriter, r *http.Request) {	query := app.AuditLogQuery{
+func (h apiHandler) auditLogs(w http.ResponseWriter, r *http.Request) {
+	query := app.AuditLogQuery{
 		Page:     queryInt(r, "page", 1),
 		PageSize: queryInt(r, "pageSize", 50),
 		Action:   r.URL.Query().Get("action"),
@@ -224,6 +230,44 @@ func (h apiHandler) importConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	payload, err := h.service.ImportConfig(r.Context(), input)
+	writeResult(w, payload, err)
+}
+
+func (h apiHandler) listBackups(w http.ResponseWriter, r *http.Request) {
+	payload, err := h.service.ListBackups(r.Context())
+	writeResult(w, payload, err)
+}
+
+func (h apiHandler) createBackup(w http.ResponseWriter, r *http.Request) {
+	payload, err := h.service.BackupNow(r.Context())
+	writeResultStatus(w, http.StatusCreated, payload, err)
+}
+
+func (h apiHandler) downloadBackup(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	data, err := h.service.ReadBackup(r.Context(), name)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	// name 已通过 ReadBackup 的白名单校验，可安全拼入响应头。
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename="+name)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (h apiHandler) restoreBackup(w http.ResponseWriter, r *http.Request) {
+	var input app.BackupRestoreInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	payload, err := h.service.RestoreBackup(r.Context(), r.PathValue("name"), input.Mode)
+	writeResult(w, payload, err)
+}
+
+func (h apiHandler) proxiesStatus(w http.ResponseWriter, r *http.Request) {
+	payload, err := h.service.ProxiesStatus(r.Context())
 	writeResult(w, payload, err)
 }
 

@@ -1120,6 +1120,27 @@ html[data-theme="dark"] .theme-switch:not(.is-dark) .theme-switch-sun {
   transform: translateX(14px);
 }
 
+.backup-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 36px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: var(--shadow-subtle);
+  font-size: 13px;
+  font-weight: 620;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.backup-toggle:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .drawer-layer {
   position: fixed;
   inset: 0;
@@ -2257,6 +2278,11 @@ html[data-theme="dark"] .rule-toggle::after {
 html[data-theme="dark"] .rule-toggle.active {
   border-color: #f4f4f5;
   background: #f4f4f5;
+}
+
+html[data-theme="dark"] .backup-toggle {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(39, 39, 42, 0.82);
 }
 
 html[data-theme="dark"] .rule-drawer {

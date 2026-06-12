@@ -10,6 +10,7 @@ import {
   Trash2,
   Upload,
   Filter,
+  Archive,
 } from 'lucide-vue-next'
 import {
   activateFrpcVersion,
@@ -18,7 +19,10 @@ import {
   checkAppUpdate,
   checkLatestFrpc,
   clearAuditLogs,
+  createBackup,
+  downloadBackup,
   getAuthStatus,
+  getBackups,
   getFrpcVersion,
   getFrpcVersions,
   getSettings,
@@ -27,7 +31,9 @@ import {
   installFrpcOnline,
   importConfig,
   getAuditLogs,
+  restoreBackup,
   updateSettings,
+  type BackupFile,
   type ConfigBundle,
   type FrpcVersion,
   type Settings,
@@ -63,6 +69,24 @@ const confirmAccessKey = ref('')
 const auditAction = ref('')
 const auditResult = ref('')
 
+const autoBackupEnabled = ref(false)
+const autoBackupInterval = ref(24)
+const autoBackupMaxFiles = ref(7)
+const backupSaving = ref(false)
+const backingUp = ref(false)
+const backupsLoading = ref(false)
+const restoringBackup = ref('')
+const backups = ref<BackupFile[]>([])
+
+const backupIntervalOptions = [
+  { value: 6, label: '每 6 小时' },
+  { value: 12, label: '每 12 小时' },
+  { value: 24, label: '每天' },
+  { value: 72, label: '每 3 天' },
+  { value: 168, label: '每周' },
+]
+const backupKeepOptions = [3, 7, 14, 30]
+
 const canChangeAccessKey = computed(
   () =>
     currentAccessKey.value.trim().length >= 8 &&
@@ -74,6 +98,7 @@ onMounted(() => {
   void loadSettings()
   void loadVersions()
   void loadAuditLogs(1)
+  void loadBackups()
   void checkForUpdate(true)
 })
 
@@ -82,6 +107,9 @@ async function loadSettings() {
   try {
     settings.value = await getSettings()
     githubProxy.value = settings.value.githubProxy || ''
+    autoBackupEnabled.value = settings.value.autoBackupEnabled
+    autoBackupInterval.value = settings.value.autoBackupIntervalHours
+    autoBackupMaxFiles.value = settings.value.autoBackupMaxFiles
   } catch (err) {
     ElMessage.error(errorMessage(err, '加载设置失败'))
   } finally {
@@ -248,6 +276,98 @@ function downloadJSON(payload: unknown, filename: string) {
   URL.revokeObjectURL(url)
 }
 
+async function loadBackups() {
+  backupsLoading.value = true
+  try {
+    backups.value = await getBackups()
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '加载备份列表失败'))
+  } finally {
+    backupsLoading.value = false
+  }
+}
+
+// 自动备份设置即改即存；githubProxy 取已持久化的值，避免把输入框里未保存的草稿一并提交。
+async function saveBackupSettings() {
+  backupSaving.value = true
+  try {
+    settings.value = await updateSettings({
+      githubProxy: settings.value?.githubProxy || '',
+      autoBackupEnabled: autoBackupEnabled.value,
+      autoBackupIntervalHours: autoBackupInterval.value,
+      autoBackupMaxFiles: autoBackupMaxFiles.value,
+    })
+    ElMessage.success('自动备份设置已保存')
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '保存设置失败'))
+    await loadSettings()
+  } finally {
+    backupSaving.value = false
+  }
+}
+
+function toggleAutoBackup() {
+  autoBackupEnabled.value = !autoBackupEnabled.value
+  void saveBackupSettings()
+}
+
+async function backupNow() {
+  backingUp.value = true
+  try {
+    const file = await createBackup()
+    ElMessage.success(`已备份：${file.name}`)
+    await Promise.all([loadBackups(), loadSettings()])
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '备份失败'))
+  } finally {
+    backingUp.value = false
+  }
+}
+
+async function saveBackupFile(name: string) {
+  try {
+    const blob = await downloadBackup(name)
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = name
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '下载备份失败'))
+  }
+}
+
+async function restoreFromBackup(file: BackupFile) {
+  try {
+    await ElMessageBox.confirm(
+      `将删除当前全部服务器与规则，替换为 ${formatTime(file.createdAt)} 的备份内容。建议先点「立即备份」留存当前状态。`,
+      '恢复备份',
+      { type: 'warning', confirmButtonText: '恢复', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  restoringBackup.value = file.name
+  try {
+    const result = await restoreBackup(file.name, 'replace')
+    ElMessage.success(result.message || '备份已恢复')
+    await Promise.all([loadSettings(), loadVersions(), loadBackups()])
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '恢复失败'))
+  } finally {
+    restoringBackup.value = ''
+  }
+}
+
+function formatSize(size: number) {
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
 async function submitAccessKeyChange() {
   if (!canChangeAccessKey.value) return
   securitySaving.value = true
@@ -302,6 +422,9 @@ function actionLabel(value: string) {
     'servers.start': '启动',
     'servers.reload': '热重载',
     'frpc.install_online': '在线安装',
+    'backup.create': '创建备份',
+    'backup.download': '下载备份',
+    'backup.restore': '恢复备份',
   }
   return labels[value] || value
 }
@@ -539,6 +662,66 @@ function awaitRestartThenReload() {
             <input ref="importFileInput" class="hidden-input" type="file" accept=".json" @change="pickImportFile" />
           </label>
         </div>
+      </div>
+    </section>
+
+    <section class="surface-panel settings-panel" v-loading="backupsLoading">
+      <div class="section-heading settings-heading">
+        <div>
+          <p class="overline">Auto Backup</p>
+          <h2>自动备份</h2>
+          <span>
+            定期把完整配置快照存到数据目录的 <code>backups/</code> 下；内容未变化时自动跳过。
+            {{ settings?.lastAutoBackupAt ? `最近备份：${formatTime(settings.lastAutoBackupAt)}` : '尚未备份过' }}
+          </span>
+        </div>
+        <div class="row-actions">
+          <button class="primary-action" type="button" :disabled="backingUp" @click="backupNow">
+            <Archive :size="15" :stroke-width="1.8" />
+            {{ backingUp ? '备份中…' : '立即备份' }}
+          </button>
+        </div>
+      </div>
+
+      <div class="rule-toolbar">
+        <button class="backup-toggle" type="button" :disabled="backupSaving" @click="toggleAutoBackup">
+          <span class="rule-toggle" :class="{ active: autoBackupEnabled }" />
+          <span>{{ autoBackupEnabled ? '已启用' : '已停用' }}</span>
+        </button>
+        <select v-model.number="autoBackupInterval" class="native-select compact" :disabled="backupSaving" @change="saveBackupSettings">
+          <option v-for="option in backupIntervalOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+        </select>
+        <select v-model.number="autoBackupMaxFiles" class="native-select compact" :disabled="backupSaving" @change="saveBackupSettings">
+          <option v-for="count in backupKeepOptions" :key="count" :value="count">保留 {{ count }} 份</option>
+        </select>
+      </div>
+
+      <div class="version-registry">
+        <article v-for="file in backups" :key="file.name" class="session-row version-row">
+          <div class="settings-row-copy">
+            <p class="overline">{{ formatSize(file.size) }}</p>
+            <strong>{{ formatTime(file.createdAt) }}</strong>
+            <div class="session-meta">
+              <code class="version-path" :title="file.name">{{ file.name }}</code>
+            </div>
+          </div>
+          <div class="row-actions">
+            <button class="ghost-action strong" type="button" @click="saveBackupFile(file.name)">
+              <Download :size="15" :stroke-width="1.8" />
+              下载
+            </button>
+            <button
+              class="ghost-action strong"
+              type="button"
+              :disabled="restoringBackup === file.name"
+              @click="restoreFromBackup(file)"
+            >
+              <RotateCw :size="15" :stroke-width="1.8" />
+              {{ restoringBackup === file.name ? '恢复中…' : '恢复' }}
+            </button>
+          </div>
+        </article>
+        <div v-if="backups.length === 0" class="empty-state">暂无备份；启用自动备份或点击「立即备份」生成第一份</div>
       </div>
     </section>
 

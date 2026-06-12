@@ -63,6 +63,7 @@ func main() {
 	if err := svc.Restore(ctx); err != nil {
 		logger.Warn("restore runtime state failed", "error", err)
 	}
+	go svc.RunAutoBackup(ctx)
 
 	handler := server.New(server.Options{
 		Service:           svc,

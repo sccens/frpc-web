@@ -130,10 +130,42 @@ export interface FrpcVersion {
 export interface Settings {
   addr: string
   githubProxy: string
+  autoBackupEnabled: boolean
+  autoBackupIntervalHours: number
+  autoBackupMaxFiles: number
+  lastAutoBackupAt?: string
 }
 
 export interface SettingsInput {
   githubProxy: string
+  autoBackupEnabled?: boolean
+  autoBackupIntervalHours?: number
+  autoBackupMaxFiles?: number
+}
+
+export interface BackupFile {
+  name: string
+  size: number
+  createdAt: string
+}
+
+export type ProxyPhase = 'new' | 'wait start' | 'start error' | 'running' | 'check failed' | 'closed'
+
+export interface ProxyStatus {
+  name: string
+  type: string
+  phase: ProxyPhase
+  err?: string
+  localAddr?: string
+  plugin?: string
+  remoteAddr?: string
+}
+
+export interface ServerProxyStatus {
+  serverId: string
+  running: boolean
+  error?: string
+  proxies: ProxyStatus[]
 }
 
 export interface AuthStatus {
@@ -306,6 +338,33 @@ export async function exportConfig() {
 
 export async function importConfig(input: ConfigImportInput) {
   const { data } = await http.post<ActionResult>('/config/import', input)
+  return data
+}
+
+export async function getBackups() {
+  const { data } = await http.get<BackupFile[]>('/backups')
+  return data
+}
+
+export async function createBackup() {
+  const { data } = await http.post<BackupFile>('/backups')
+  return data
+}
+
+export async function downloadBackup(name: string) {
+  const { data } = await http.get<Blob>(`/backups/${encodeURIComponent(name)}`, {
+    responseType: 'blob',
+  })
+  return data
+}
+
+export async function restoreBackup(name: string, mode: 'merge' | 'replace') {
+  const { data } = await http.post<ActionResult>(`/backups/${encodeURIComponent(name)}/restore`, { mode })
+  return data
+}
+
+export async function getProxiesStatus() {
+  const { data } = await http.get<ServerProxyStatus[]>('/proxies/status')
   return data
 }
 
