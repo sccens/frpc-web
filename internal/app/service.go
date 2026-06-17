@@ -71,13 +71,17 @@ type Runtime interface {
 }
 
 var (
-	ErrAlreadyBootstrapped = errors.New("access key already initialized")
-	ErrBootstrapRequired   = errors.New("access key initialization required")
 	ErrInvalidInput        = errors.New("invalid input")
 	ErrInvalidCredentials  = errors.New("invalid access key")
 	ErrUnauthorized        = errors.New("unauthorized")
+	ErrPasswordChangeRequired = errors.New("password change required")
 	ErrNotFound            = errors.New("resource not found")
 )
+
+// DefaultAccessKey 是出厂初始访问密钥。首次以它登录后会被强制要求改密；
+// 一旦设置了自己的密码，它立即失效。可用环境变量 FRPC_WEB_ACCESS_KEY
+// 覆盖为自定义初始密钥（同样是“初始/一次性”语义，设密后即失效）。
+const DefaultAccessKey = "FrpcWeb-Init-9527"
 
 type Options struct {
 	Store   Store
@@ -91,7 +95,6 @@ type Service struct {
 	runtime         Runtime
 	addr            string
 	version         string
-	bootstrapMu     sync.Mutex
 	restartMu       sync.Mutex
 	restartAttempts map[string]int
 	restartTimers   map[string]*time.Timer
@@ -222,42 +225,37 @@ func (s *Service) handleRuntimeExit(serverID string, exitErr error) {
 }
 
 func (s *Service) AuthStatus(ctx context.Context) (AuthStatus, error) {
-	return AuthStatus{Bootstrapped: s.accessKeyConfigured(ctx)}, nil
+	// 系统始终存在初始密钥（出厂默认或 env 覆盖），是否需要强制改密取决于
+	// 用户是否已设置自己的密码。
+	return AuthStatus{
+		MustChangePassword: !s.hasUserPassword(ctx),
+	}, nil
 }
 
-func (s *Service) Bootstrap(ctx context.Context, input AuthInput, meta AuthMeta) (Session, error) {
-	// 串行化首次初始化，避免并发请求都通过 accessKeyConfigured 检查后互相覆盖。
-	s.bootstrapMu.Lock()
-	defer s.bootstrapMu.Unlock()
-	if s.accessKeyConfigured(ctx) {
-		return Session{}, ErrAlreadyBootstrapped
-	}
-	accessKey, err := normalizeAccessKey(input.AccessKey)
-	if err != nil {
-		return Session{}, invalidInput(err)
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(accessKey), bcrypt.DefaultCost)
-	if err != nil {
-		return Session{}, err
-	}
-	if err := s.store.SetSetting(ctx, "access_key_hash", string(hash)); err != nil {
-		return Session{}, err
-	}
-	return s.newSession(ctx, meta)
+// RequiresPasswordChange 报告系统当前是否仍在使用初始密钥（尚未设置用户密码）。
+// 中间件据此把仍持“初始密钥会话”的请求限制为只能改密。
+func (s *Service) RequiresPasswordChange(ctx context.Context) bool {
+	return !s.hasUserPassword(ctx)
 }
 
 func (s *Service) Login(ctx context.Context, input AuthInput, meta AuthMeta) (Session, error) {
-	accessKey, err := normalizeAccessKey(input.AccessKey)
-	if err != nil {
+	accessKey := strings.TrimSpace(input.AccessKey)
+	if accessKey == "" {
 		return Session{}, ErrInvalidCredentials
 	}
-	if !s.accessKeyConfigured(ctx) {
-		return Session{}, ErrBootstrapRequired
+	// 已设置用户密码：只认存储的 bcrypt 哈希，初始密钥（默认/env）此后一律失效。
+	if s.hasUserPassword(ctx) {
+		if err := s.verifyUserPassword(ctx, accessKey); err != nil {
+			return Session{}, ErrInvalidCredentials
+		}
+		return s.newSession(ctx, meta)
 	}
-	if err := s.verifyAccessKey(ctx, accessKey); err != nil {
-		return Session{}, ErrInvalidCredentials
+	// 尚未设置用户密码：校验初始密钥；成功后 AuthStatus.MustChangePassword 仍为 true，
+	// 由中间件强制其在改密前不能调用其他业务接口。
+	if subtleEqual(initialAccessKey(), accessKey) {
+		return s.newSession(ctx, meta)
 	}
-	return s.newSession(ctx, meta)
+	return Session{}, ErrInvalidCredentials
 }
 
 func (s *Service) VerifySession(ctx context.Context, sessionID string) (Session, error) {
@@ -282,19 +280,16 @@ func (s *Service) RevokeCurrentSession(ctx context.Context, sessionID string) er
 }
 
 func (s *Service) ChangeAccessKey(ctx context.Context, input AccessKeyInput) error {
-	if strings.TrimSpace(os.Getenv("FRPC_WEB_ACCESS_KEY")) != "" {
-		return invalidInput(errors.New("access key is controlled by FRPC_WEB_ACCESS_KEY; edit the environment variable and restart frpc-web"))
-	}
-	current, err := normalizeAccessKey(input.CurrentAccessKey)
+	next, err := validateNewPassword(input.NewAccessKey)
 	if err != nil {
 		return invalidInput(err)
 	}
-	next, err := normalizeAccessKey(input.NewAccessKey)
-	if err != nil {
-		return invalidInput(err)
-	}
-	if err := s.verifyAccessKey(ctx, current); err != nil {
-		return ErrInvalidCredentials
+	// 已设置用户密码时，常规改密需校验当前密码；首次设置（仍是初始密钥）则
+	// 由有效会话本身作为凭证——调用方此时已用初始密钥登录并持有会话。
+	if s.hasUserPassword(ctx) {
+		if err := s.verifyUserPassword(ctx, strings.TrimSpace(input.CurrentAccessKey)); err != nil {
+			return ErrInvalidCredentials
+		}
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(next), bcrypt.DefaultCost)
 	if err != nil {
@@ -303,6 +298,7 @@ func (s *Service) ChangeAccessKey(ctx context.Context, input AccessKeyInput) err
 	if err := s.store.SetSetting(ctx, "access_key_hash", string(hash)); err != nil {
 		return err
 	}
+	// 改密后吊销所有会话：初始密钥/旧密码连同其会话立即失效，用户用新密码重新登录。
 	return s.store.RevokeAllSessions(ctx)
 }
 
@@ -1283,27 +1279,26 @@ func invalidInput(err error) error {
 	return fmt.Errorf("%w: %v", ErrInvalidInput, err)
 }
 
-func (s *Service) accessKeyConfigured(ctx context.Context) bool {
-	if strings.TrimSpace(os.Getenv("FRPC_WEB_ACCESS_KEY")) != "" {
-		return true
+// initialAccessKey 返回当前生效的初始密钥：env 覆盖优先，否则用出厂默认。
+// 仅在用户尚未设置自己的密码时用于登录校验，设密后即失效。
+func initialAccessKey() string {
+	if v := strings.TrimSpace(os.Getenv("FRPC_WEB_ACCESS_KEY")); v != "" {
+		return v
 	}
+	return DefaultAccessKey
+}
+
+// hasUserPassword 报告用户是否已设置自己的密码（即已脱离初始密钥）。
+func (s *Service) hasUserPassword(ctx context.Context) bool {
 	stored, err := s.store.GetSetting(ctx, "access_key_hash")
 	return err == nil && strings.TrimSpace(stored) != ""
 }
 
-func (s *Service) verifyAccessKey(ctx context.Context, accessKey string) error {
-	if envKey := strings.TrimSpace(os.Getenv("FRPC_WEB_ACCESS_KEY")); envKey != "" {
-		if subtleEqual(envKey, accessKey) {
-			return nil
-		}
-		return ErrInvalidCredentials
-	}
+// verifyUserPassword 用 bcrypt 校验已设置的用户密码。
+func (s *Service) verifyUserPassword(ctx context.Context, accessKey string) error {
 	stored, err := s.store.GetSetting(ctx, "access_key_hash")
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return ErrBootstrapRequired
-		}
-		return err
+	if err != nil || strings.TrimSpace(stored) == "" {
+		return ErrInvalidCredentials
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(stored), []byte(accessKey)); err != nil {
 		return ErrInvalidCredentials
@@ -1337,10 +1332,28 @@ func (s *Service) newSession(ctx context.Context, meta AuthMeta) (Session, error
 	return session, nil
 }
 
-func normalizeAccessKey(value string) (string, error) {
+// validateNewPassword 校验用户自设的新密码策略：8-20 位，且同时包含大写字母、
+// 小写字母、数字，仅允许字母与数字。初始密钥（默认/env）不受此策略约束。
+func validateNewPassword(value string) (string, error) {
 	value = strings.TrimSpace(value)
-	if len(value) < 8 || len(value) > 256 {
-		return "", errors.New("access key must be 8-256 characters")
+	if len(value) < 8 || len(value) > 20 {
+		return "", errors.New("密码长度需为 8-20 位")
+	}
+	var hasUpper, hasLower, hasDigit bool
+	for _, r := range value {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			hasUpper = true
+		case r >= 'a' && r <= 'z':
+			hasLower = true
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		default:
+			return "", errors.New("密码只能包含字母和数字")
+		}
+	}
+	if !hasUpper || !hasLower || !hasDigit {
+		return "", errors.New("密码必须同时包含大写字母、小写字母和数字")
 	}
 	return value, nil
 }

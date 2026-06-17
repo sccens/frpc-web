@@ -18,18 +18,15 @@ func authMiddleware(service *app.Service, next http.Handler) http.Handler {
 			return
 		}
 
-		status, err := service.AuthStatus(r.Context())
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if !status.Bootstrapped {
-			writeError(w, http.StatusUnauthorized, app.ErrBootstrapRequired.Error())
+		if _, err := sessionFromRequest(r, service); err != nil {
+			writeError(w, http.StatusUnauthorized, app.ErrUnauthorized.Error())
 			return
 		}
 
-		if _, err := sessionFromRequest(r, service); err != nil {
-			writeError(w, http.StatusUnauthorized, app.ErrUnauthorized.Error())
+		// 仍在使用初始密钥时，会话只能用于改密；拦截对其他业务接口的访问，
+		// 让“首次登录强制改密”成为真正的服务端约束，而非仅前端弹窗。
+		if service.RequiresPasswordChange(r.Context()) && r.URL.Path != "/api/auth/access-key" {
+			writeError(w, http.StatusForbidden, app.ErrPasswordChangeRequired.Error())
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -38,7 +35,7 @@ func authMiddleware(service *app.Service, next http.Handler) http.Handler {
 
 func isPublicAPI(path string) bool {
 	switch path {
-	case "/api/health", "/api/auth/status", "/api/auth/bootstrap", "/api/auth/login", "/api/auth/logout":
+	case "/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/logout":
 		return true
 	default:
 		return false

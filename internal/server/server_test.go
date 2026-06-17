@@ -27,38 +27,37 @@ func TestAccessKeyAPIProtectsBusinessRoutes(t *testing.T) {
 
 	assertStatus(t, handler, http.MethodGet, "/api/settings", "", http.StatusUnauthorized, nil)
 
+	// 用出厂默认密钥登录，拿到一个“待改密”会话。
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/bootstrap", bytes.NewBufferString(`{"accessKey":"password123"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"accessKey":"`+app.DefaultAccessKey+`"}`))
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("bootstrap status = %d, body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	cookies := rec.Result().Cookies()
 	if len(cookies) == 0 {
-		t.Fatal("bootstrap should set session cookie")
-	}
-	sessionCookie := cookies[0]
-	if !sessionCookie.HttpOnly || sessionCookie.SameSite != http.SameSiteLaxMode {
-		t.Fatalf("unexpected cookie flags: %#v", sessionCookie)
-	}
-
-	assertStatus(t, handler, http.MethodGet, "/api/settings", "", http.StatusOK, sessionCookie)
-	assertStatus(t, handler, http.MethodPost, "/api/auth/bootstrap", `{"accessKey":"password123"}`, http.StatusConflict, nil)
-	assertStatus(t, handler, http.MethodPost, "/api/auth/login", `{"accessKey":"bad-password"}`, http.StatusUnauthorized, nil)
-
-	login := httptest.NewRecorder()
-	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"accessKey":"password123"}`))
-	handler.ServeHTTP(login, loginReq)
-	if login.Code != http.StatusOK {
-		t.Fatalf("login status = %d, body = %s", login.Code, login.Body.String())
-	}
-	if len(login.Result().Cookies()) == 0 {
 		t.Fatal("login should set session cookie")
 	}
+	initCookie := cookies[0]
+	if !initCookie.HttpOnly || initCookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("unexpected cookie flags: %#v", initCookie)
+	}
+
+	// 待改密会话只能改密：访问其他业务接口被拦截为 403。
+	assertStatus(t, handler, http.MethodGet, "/api/settings", "", http.StatusForbidden, initCookie)
+
+	// 设置自己的密码后，初始密钥与该会话同时失效。
+	assertStatus(t, handler, http.MethodPost, "/api/auth/access-key", `{"newAccessKey":"Password123"}`, http.StatusOK, initCookie)
+	assertStatus(t, handler, http.MethodGet, "/api/settings", "", http.StatusUnauthorized, initCookie)
+	assertStatus(t, handler, http.MethodPost, "/api/auth/login", `{"accessKey":"`+app.DefaultAccessKey+`"}`, http.StatusUnauthorized, nil)
+
+	// 用新密码登录后即可访问业务接口。
+	full := loginCookie(t, handler, "Password123")
+	assertStatus(t, handler, http.MethodGet, "/api/settings", "", http.StatusOK, full)
 
 	logout := httptest.NewRecorder()
 	logoutReq := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
-	logoutReq.AddCookie(sessionCookie)
+	logoutReq.AddCookie(full)
 	handler.ServeHTTP(logout, logoutReq)
 	if logout.Code != http.StatusOK {
 		t.Fatalf("logout status = %d, body = %s", logout.Code, logout.Body.String())
@@ -66,7 +65,7 @@ func TestAccessKeyAPIProtectsBusinessRoutes(t *testing.T) {
 	if len(logout.Result().Cookies()) == 0 || logout.Result().Cookies()[0].MaxAge != -1 {
 		t.Fatalf("logout should clear cookie: %#v", logout.Result().Cookies())
 	}
-	assertStatus(t, handler, http.MethodGet, "/api/settings", "", http.StatusUnauthorized, sessionCookie)
+	assertStatus(t, handler, http.MethodGet, "/api/settings", "", http.StatusUnauthorized, full)
 }
 
 func TestAccessKeyAndAuditAPI(t *testing.T) {
@@ -80,8 +79,8 @@ func TestAccessKeyAndAuditAPI(t *testing.T) {
 	svc := app.NewService(app.Options{Store: store, Runtime: runtime, Addr: "127.0.0.1:8080"})
 	handler := New(Options{Service: svc, WebDir: t.TempDir()})
 
-	firstCookie := bootstrapCookie(t, handler)
-	secondCookie := loginCookie(t, handler, "password123")
+	firstCookie := personalize(t, handler, "Password123")
+	secondCookie := loginCookie(t, handler, "Password123")
 
 	createServerReq := `{"name":"main","serverAddr":"frp.example.com","serverPort":7000,"transportProtocol":"tcp","adminPort":17400}`
 	assertStatus(t, handler, http.MethodPost, "/api/servers", createServerReq, http.StatusCreated, secondCookie)
@@ -91,11 +90,11 @@ func TestAccessKeyAndAuditAPI(t *testing.T) {
 	}
 
 	// 修改 Access Key 后所有会话立即失效。
-	assertStatus(t, handler, http.MethodPost, "/api/auth/access-key", `{"currentAccessKey":"password123","newAccessKey":"new-password123"}`, http.StatusOK, secondCookie)
+	assertStatus(t, handler, http.MethodPost, "/api/auth/access-key", `{"currentAccessKey":"Password123","newAccessKey":"NewPass456"}`, http.StatusOK, secondCookie)
 	assertStatus(t, handler, http.MethodGet, "/api/settings", "", http.StatusUnauthorized, firstCookie)
 	assertStatus(t, handler, http.MethodGet, "/api/settings", "", http.StatusUnauthorized, secondCookie)
-	assertStatus(t, handler, http.MethodPost, "/api/auth/login", `{"accessKey":"password123"}`, http.StatusUnauthorized, nil)
-	newCookie := loginCookie(t, handler, "new-password123")
+	assertStatus(t, handler, http.MethodPost, "/api/auth/login", `{"accessKey":"Password123"}`, http.StatusUnauthorized, nil)
+	newCookie := loginCookie(t, handler, "NewPass456")
 	assertStatus(t, handler, http.MethodGet, "/api/settings", "", http.StatusOK, newCookie)
 	assertStatus(t, handler, http.MethodGet, "/api/audit-logs", "", http.StatusOK, newCookie)
 	assertStatus(t, handler, http.MethodDelete, "/api/audit-logs", "", http.StatusOK, newCookie)
@@ -110,12 +109,11 @@ func TestLoginRateLimit(t *testing.T) {
 	defer store.Close()
 	svc := app.NewService(app.Options{Store: store, Runtime: &serverFakeRuntime{}, Addr: "127.0.0.1:8080"})
 	handler := New(Options{Service: svc, WebDir: t.TempDir()})
-	_ = bootstrapCookie(t, handler)
 
 	for i := 0; i < 5; i++ {
 		assertStatus(t, handler, http.MethodPost, "/api/auth/login", `{"accessKey":"wrong-password"}`, http.StatusUnauthorized, nil)
 	}
-	assertStatus(t, handler, http.MethodPost, "/api/auth/login", `{"accessKey":"password123"}`, http.StatusTooManyRequests, nil)
+	assertStatus(t, handler, http.MethodPost, "/api/auth/login", `{"accessKey":"`+app.DefaultAccessKey+`"}`, http.StatusTooManyRequests, nil)
 }
 
 func TestClientIPTrustProxyHeaders(t *testing.T) {
@@ -143,15 +141,15 @@ func TestSessionCookieSecureBehindTrustedHTTPSProxy(t *testing.T) {
 	handler := New(Options{Service: svc, WebDir: t.TempDir(), TrustProxyHeaders: true})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/bootstrap", bytes.NewBufferString(`{"accessKey":"password123"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"accessKey":"`+app.DefaultAccessKey+`"}`))
 	req.Header.Set("X-Forwarded-Proto", "https")
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("bootstrap status = %d, body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	cookies := rec.Result().Cookies()
 	if len(cookies) == 0 {
-		t.Fatal("bootstrap should set session cookie")
+		t.Fatal("login should set session cookie")
 	}
 	if !cookies[0].Secure {
 		t.Fatalf("session cookie should be secure behind trusted HTTPS proxy: %#v", cookies[0])
@@ -228,15 +226,13 @@ func assertStatus(t *testing.T, handler http.Handler, method, path, body string,
 	}
 }
 
-func bootstrapCookie(t *testing.T, handler http.Handler) *http.Cookie {
+// personalize 完成首登改密流程：用初始密钥登录、设置满足策略的新密码，
+// 再用新密码登录，返回一个可访问业务接口的会话 Cookie。
+func personalize(t *testing.T, handler http.Handler, newKey string) *http.Cookie {
 	t.Helper()
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/bootstrap", bytes.NewBufferString(`{"accessKey":"password123"}`))
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("bootstrap status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	return rec.Result().Cookies()[0]
+	initCookie := loginCookie(t, handler, app.DefaultAccessKey)
+	assertStatus(t, handler, http.MethodPost, "/api/auth/access-key", `{"newAccessKey":"`+newKey+`"}`, http.StatusOK, initCookie)
+	return loginCookie(t, handler, newKey)
 }
 
 func loginCookie(t *testing.T, handler http.Handler, accessKey string) *http.Cookie {

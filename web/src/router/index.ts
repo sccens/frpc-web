@@ -2,7 +2,6 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { getAuthStatus } from '../api/client'
 
 const AppLayout = () => import('../layouts/AppLayout.vue')
-const BootstrapPage = () => import('../pages/BootstrapPage.vue')
 const DashboardPage = () => import('../pages/DashboardPage.vue')
 const LoginPage = () => import('../pages/LoginPage.vue')
 const ServersPage = () => import('../pages/ServersPage.vue')
@@ -12,7 +11,6 @@ const TopologyPage = () => import('../pages/TopologyPage.vue')
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/bootstrap', name: 'bootstrap', component: BootstrapPage, meta: { public: true } },
     { path: '/login', name: 'login', component: LoginPage, meta: { public: true } },
     {
       path: '/',
@@ -42,10 +40,6 @@ router.beforeEach(async (to) => {
     // 后端暂时不可达时放行导航，避免整个应用卡死；
     // 页面内的请求会展示各自的错误提示。
     return true
-  }
-
-  if (!status.bootstrapped) {
-    return to.name === 'bootstrap' ? true : { name: 'bootstrap', query: { redirect: to.fullPath } }
   }
 
   if (isPublic) {

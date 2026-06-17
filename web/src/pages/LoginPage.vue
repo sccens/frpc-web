@@ -76,7 +76,7 @@ async function submit() {
         <div class="auth-card-heading">
           <p class="overline">Owner Login</p>
           <h2>Secure Access</h2>
-          <span>输入 Access Key 后，后端会签发 HttpOnly 会话 Cookie。</span>
+          <span>输入 Access Key 后，后端会签发 HttpOnly 会话 Cookie。首次使用请用初始密钥登录（见安装输出 / README），登录后需设置自己的新密码。</span>
         </div>
 
         <label class="auth-control-field">

@@ -39,7 +39,6 @@ func New(opts Options) http.Handler {
 
 	mux.HandleFunc("GET /api/health", api.health)
 	mux.HandleFunc("GET /api/auth/status", api.authStatus)
-	mux.HandleFunc("POST /api/auth/bootstrap", api.bootstrap)
 	mux.HandleFunc("POST /api/auth/login", api.login)
 	mux.HandleFunc("POST /api/auth/logout", api.logout)
 	mux.HandleFunc("POST /api/auth/access-key", api.changeAccessKey)
@@ -104,34 +103,16 @@ func (h apiHandler) authStatus(w http.ResponseWriter, r *http.Request) {
 		writeResult(w, status, err)
 		return
 	}
+	authed := false
 	if _, err := sessionFromRequest(r, h.service); err == nil {
-		status.Authenticated = true
+		authed = true
+	}
+	status.Authenticated = authed
+	if !authed {
+		// 不向匿名访问者暴露“仍在使用默认密钥”这一事实。
+		status.MustChangePassword = false
 	}
 	writeJSON(w, http.StatusOK, status)
-}
-
-func (h apiHandler) bootstrap(w http.ResponseWriter, r *http.Request) {
-	var input app.AuthInput
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	ip := clientIP(r, h.trustProxyHeaders)
-	if retryAfter, ok := h.limiter.Allow(ip); !ok {
-		writeRateLimited(w, retryAfter)
-		return
-	}
-	meta := app.AuthMeta{IP: ip, UserAgent: r.UserAgent()}
-	session, err := h.service.Bootstrap(r.Context(), input, meta)
-	if err != nil {
-		h.limiter.Fail(ip)
-		h.auditAuth(r, "auth.bootstrap", "failure", err.Error())
-		writeResult(w, session, err)
-		return
-	}
-	writeSessionCookie(w, r, session, h.trustProxyHeaders)
-	h.limiter.Reset(ip)
-	h.auditAuth(r, "auth.bootstrap", "success", "")
-	writeJSON(w, http.StatusCreated, session)
 }
 
 func (h apiHandler) login(w http.ResponseWriter, r *http.Request) {
@@ -155,7 +136,11 @@ func (h apiHandler) login(w http.ResponseWriter, r *http.Request) {
 	writeSessionCookie(w, r, session, h.trustProxyHeaders)
 	h.limiter.Reset(ip)
 	h.auditAuth(r, "auth.login", "success", "")
-	writeJSON(w, http.StatusOK, session)
+	// mustChangePassword 为 true 时，前端弹出强制改密窗口，后端中间件也会
+	// 拦截该会话对其他业务接口的访问，直到设置好自己的密码。
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"mustChangePassword": h.service.RequiresPasswordChange(r.Context()),
+	})
 }
 
 func (h apiHandler) logout(w http.ResponseWriter, r *http.Request) {
@@ -464,10 +449,10 @@ func writeResultStatus(w http.ResponseWriter, okStatus int, payload any, err err
 		status := http.StatusInternalServerError
 		if errors.Is(err, app.ErrInvalidInput) {
 			status = http.StatusBadRequest
-		} else if errors.Is(err, app.ErrInvalidCredentials) || errors.Is(err, app.ErrUnauthorized) || errors.Is(err, app.ErrBootstrapRequired) {
+		} else if errors.Is(err, app.ErrInvalidCredentials) || errors.Is(err, app.ErrUnauthorized) {
 			status = http.StatusUnauthorized
-		} else if errors.Is(err, app.ErrAlreadyBootstrapped) {
-			status = http.StatusConflict
+		} else if errors.Is(err, app.ErrPasswordChangeRequired) {
+			status = http.StatusForbidden
 		} else if errors.Is(err, app.ErrNotFound) {
 			status = http.StatusNotFound
 		}

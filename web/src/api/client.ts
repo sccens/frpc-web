@@ -169,8 +169,8 @@ export interface ServerProxyStatus {
 }
 
 export interface AuthStatus {
-  bootstrapped: boolean
   authenticated: boolean
+  mustChangePassword: boolean
 }
 
 export interface AuthInput {
@@ -267,13 +267,8 @@ export async function getAuthStatus() {
   return data
 }
 
-export async function bootstrapAdmin(input: AuthInput) {
-  const { data } = await http.post<{ ip: string }>('/auth/bootstrap', input)
-  return data
-}
-
 export async function login(input: AuthInput) {
-  const { data } = await http.post<{ ip: string }>('/auth/login', input)
+  const { data } = await http.post<{ mustChangePassword: boolean }>('/auth/login', input)
   return data
 }
 

@@ -51,7 +51,7 @@ cd frpc-web
 docker compose up -d
 ```
 
-启动后访问 `http://127.0.0.1:8080`，首次访问会进入初始化页面设置访问密钥（Access Key），之后即可登录管理。
+启动后访问 `http://127.0.0.1:8080`，用**初始密钥**登录（出厂默认 `FrpcWeb-Init-9527`，可用 `FRPC_WEB_ACCESS_KEY` 覆盖为自定义初始密钥）。**首次登录后会强制要求设置你自己的密码**（8-20 位，须同时包含大写字母、小写字母和数字）；设置完成后初始密钥立即失效，只能用新密码登录。
 
 ## 配置
 
@@ -61,8 +61,8 @@ docker compose up -d
 | --- | --- | --- |
 | `FRPC_WEB_ADDR` | `127.0.0.1:8080` | Web 监听地址 |
 | `FRPC_WEB_DATA_DIR` | `frpc-web-data` | 状态文件、frpc 二进制、配置和日志目录 |
-| `FRPC_WEB_ACCESS_KEY` | 空 | 单管理员访问密钥 |
-| `FRPC_WEB_RESET_KEY` | 空 | 设为 `1` 启动时清空访问密钥并退出（忘记密码时用） |
+| `FRPC_WEB_ACCESS_KEY` | 空（回退内置默认 `FrpcWeb-Init-9527`） | 自定义**初始密钥**：仅用于首次登录，登录后须强制改密，设密后即失效 |
+| `FRPC_WEB_RESET_KEY` | 空 | 设为 `1` 启动时清空已设密码并退出（忘记密码时用），重启后回到初始密钥登录流程 |
 | `FRPC_WEB_GITHUB_PROXY` | 空 | 默认 GitHub 下载代理 |
 | `FRPC_WEB_TRUSTED_PROXY` | 空 | 信任代理转发的客户端 IP：`1/true/yes/on` |
 | `FRPC_WEB_WEB_DIR` | 空 | 外部前端静态目录，仅开发排障用 |
@@ -72,6 +72,7 @@ docker compose up -d
 ```bash
 export FRPC_WEB_ADDR=127.0.0.1:8080
 export FRPC_WEB_DATA_DIR=/opt/frpc-web/data
+# 公网部署务必自定义初始密钥（覆盖公开的默认值），并在首次登录后立即完成强制改密
 export FRPC_WEB_ACCESS_KEY=change-me-to-a-long-random-key
 ```
 
@@ -89,7 +90,7 @@ sudo systemctl start frpc-web
 FRPC_WEB_RESET_KEY=1 frpc-web
 ```
 
-重启后访问 Web 界面会回到首次设置页面，可以重新设置新密钥。
+重启后用初始密钥（默认 `FrpcWeb-Init-9527` 或你设置的 `FRPC_WEB_ACCESS_KEY`）登录，并按提示重新设置新密码。
 
 ## 部署
 

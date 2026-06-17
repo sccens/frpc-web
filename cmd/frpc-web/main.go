@@ -49,7 +49,7 @@ func main() {
 			logger.Error("reset access key failed", "error", err)
 			os.Exit(1)
 		}
-		logger.Info("access key has been reset; restart without FRPC_WEB_RESET_KEY=1 to bootstrap")
+		logger.Info("access key has been reset; restart without FRPC_WEB_RESET_KEY=1, then log in with the initial access key and set a new password")
 		return
 	}
 
@@ -75,6 +75,12 @@ func main() {
 
 	if isPublicBind(addr) {
 		logger.Warn("frpc-web is listening on a public address; login auth is enabled, but HTTPS and reverse proxy access control are still recommended", "addr", addr)
+		// 公网可达 + 仍是出厂默认密钥（未设 env、未完成首登改密）= 任何知道默认密钥的人都能登录。
+		if strings.TrimSpace(os.Getenv("FRPC_WEB_ACCESS_KEY")) == "" {
+			if hash, _ := store.GetSetting(ctx, "access_key_hash"); strings.TrimSpace(hash) == "" {
+				logger.Warn("SECURITY: still using the built-in default access key while listening publicly; anyone who knows the default can log in. Finish the first-login password change immediately, set FRPC_WEB_ACCESS_KEY, or bind to 127.0.0.1.")
+			}
+		}
 	}
 	if trustProxyHeaders {
 		logger.Warn("trusted proxy headers enabled; X-Forwarded-For and X-Real-IP will be used for audit and rate limiting")

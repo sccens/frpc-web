@@ -30,36 +30,26 @@ func TestServiceAccessKeySettingsAndProxyPriority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auth status: %v", err)
 	}
-	if status.Bootstrapped {
-		t.Fatal("fresh store should not be bootstrapped")
+	if !status.MustChangePassword {
+		t.Fatalf("fresh store should require password change: %#v", status)
 	}
 
-	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "password123"}, meta); !errors.Is(err, app.ErrBootstrapRequired) {
-		t.Fatalf("login before bootstrap error = %v, want bootstrap required", err)
+	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "wrong-password"}, meta); !errors.Is(err, app.ErrInvalidCredentials) {
+		t.Fatalf("wrong login error = %v, want invalid credentials", err)
 	}
-
-	session, err := svc.Bootstrap(ctx, app.AuthInput{AccessKey: "password123"}, meta)
+	// 出厂默认密钥可登录，但仍需强制改密。
+	session, err := svc.Login(ctx, app.AuthInput{AccessKey: app.DefaultAccessKey}, meta)
 	if err != nil {
-		t.Fatalf("bootstrap: %v", err)
+		t.Fatalf("login with default key: %v", err)
 	}
 	if session.Token == "" {
-		t.Fatalf("unexpected bootstrap session: %#v", session)
+		t.Fatalf("unexpected login session: %#v", session)
 	}
 	if _, err := svc.VerifySession(ctx, session.Token); err != nil {
 		t.Fatalf("verify session: %v", err)
 	}
-	if _, err := svc.Bootstrap(ctx, app.AuthInput{AccessKey: "password123"}, meta); !errors.Is(err, app.ErrAlreadyBootstrapped) {
-		t.Fatalf("duplicate bootstrap error = %v, want already bootstrapped", err)
-	}
-	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "wrong-password"}, meta); !errors.Is(err, app.ErrInvalidCredentials) {
-		t.Fatalf("wrong login error = %v, want invalid credentials", err)
-	}
-	login, err := svc.Login(ctx, app.AuthInput{AccessKey: "password123"}, meta)
-	if err != nil {
-		t.Fatalf("login: %v", err)
-	}
-	if login.Token == "" {
-		t.Fatalf("unexpected login session: %#v", login)
+	if !svc.RequiresPasswordChange(ctx) {
+		t.Fatal("should still require password change after default-key login")
 	}
 
 	settings, err := svc.UpdateSettings(ctx, app.SettingsInput{GithubProxy: " https://proxy.example/ "})
@@ -89,17 +79,43 @@ func TestServiceAccessKeySettingsAndProxyPriority(t *testing.T) {
 		t.Fatalf("install proxy = %q, want persisted proxy", runtime.installInput.GithubProxy)
 	}
 
-	if err := svc.ChangeAccessKey(ctx, app.AccessKeyInput{CurrentAccessKey: "password123", NewAccessKey: "new-password123"}); err != nil {
-		t.Fatalf("change access key: %v", err)
+	// 弱密码被策略拒绝（缺大写、缺数字、含非字母数字字符均不通过）。
+	for _, weak := range []string{"password", "password123", "Password", "Short1A", "Password-123"} {
+		if err := svc.ChangeAccessKey(ctx, app.AccessKeyInput{NewAccessKey: weak}); !errors.Is(err, app.ErrInvalidInput) {
+			t.Fatalf("weak password %q error = %v, want invalid input", weak, err)
+		}
 	}
-	if _, err := svc.VerifySession(ctx, login.Token); !errors.Is(err, app.ErrUnauthorized) {
+
+	// 首次设置自己的密码：仍是初始密钥状态，无需提供当前密钥（有效会话即凭证）。
+	if err := svc.ChangeAccessKey(ctx, app.AccessKeyInput{NewAccessKey: "Password123"}); err != nil {
+		t.Fatalf("set initial password: %v", err)
+	}
+	if svc.RequiresPasswordChange(ctx) {
+		t.Fatal("should not require password change after setting one")
+	}
+	// 改密后旧会话与初始密钥同时失效。
+	if _, err := svc.VerifySession(ctx, session.Token); !errors.Is(err, app.ErrUnauthorized) {
 		t.Fatalf("old session verify error = %v, want unauthorized", err)
 	}
-	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "password123"}, meta); !errors.Is(err, app.ErrInvalidCredentials) {
-		t.Fatalf("old key login error = %v, want invalid credentials", err)
+	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: app.DefaultAccessKey}, meta); !errors.Is(err, app.ErrInvalidCredentials) {
+		t.Fatalf("default key after set error = %v, want invalid credentials", err)
 	}
-	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "new-password123"}, meta); err != nil {
-		t.Fatalf("new key login: %v", err)
+	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "Password123"}, meta); err != nil {
+		t.Fatalf("login with new password: %v", err)
+	}
+
+	// 常规改密需校验当前密码。
+	if err := svc.ChangeAccessKey(ctx, app.AccessKeyInput{CurrentAccessKey: "WrongPass9", NewAccessKey: "NewPass456"}); !errors.Is(err, app.ErrInvalidCredentials) {
+		t.Fatalf("change with wrong current error = %v, want invalid credentials", err)
+	}
+	if err := svc.ChangeAccessKey(ctx, app.AccessKeyInput{CurrentAccessKey: "Password123", NewAccessKey: "NewPass456"}); err != nil {
+		t.Fatalf("change access key: %v", err)
+	}
+	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "Password123"}, meta); !errors.Is(err, app.ErrInvalidCredentials) {
+		t.Fatalf("old password login error = %v, want invalid credentials", err)
+	}
+	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "NewPass456"}, meta); err != nil {
+		t.Fatalf("new password login: %v", err)
 	}
 }
 
@@ -118,17 +134,28 @@ func TestServiceEnvAccessKeyPriority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auth status: %v", err)
 	}
-	if !status.Bootstrapped {
-		t.Fatal("env access key should mark auth as bootstrapped")
+	if !status.MustChangePassword {
+		t.Fatalf("env key install should require password change: %#v", status)
 	}
-	if _, err := svc.Bootstrap(ctx, app.AuthInput{AccessKey: "password123"}, meta); !errors.Is(err, app.ErrAlreadyBootstrapped) {
-		t.Fatalf("bootstrap with env key error = %v, want already bootstrapped", err)
+	// env 覆盖出厂默认：默认密钥不再是有效初始密钥，env 密钥才是。
+	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: app.DefaultAccessKey}, meta); !errors.Is(err, app.ErrInvalidCredentials) {
+		t.Fatalf("default key with env override error = %v, want invalid credentials", err)
 	}
 	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "password123"}, meta); !errors.Is(err, app.ErrInvalidCredentials) {
 		t.Fatalf("wrong env key login error = %v, want invalid credentials", err)
 	}
 	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "env-secret-123"}, meta); err != nil {
 		t.Fatalf("env key login: %v", err)
+	}
+	// 设置用户密码后，env 初始密钥失效。
+	if err := svc.ChangeAccessKey(ctx, app.AccessKeyInput{NewAccessKey: "Password123"}); err != nil {
+		t.Fatalf("set password: %v", err)
+	}
+	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "env-secret-123"}, meta); !errors.Is(err, app.ErrInvalidCredentials) {
+		t.Fatalf("env key after set error = %v, want invalid credentials", err)
+	}
+	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "Password123"}, meta); err != nil {
+		t.Fatalf("user password login: %v", err)
 	}
 }
 

@@ -38,8 +38,10 @@ type AuthInput struct {
 }
 
 type AuthStatus struct {
-	Bootstrapped  bool `json:"bootstrapped"`
 	Authenticated bool `json:"authenticated"`
+	// MustChangePassword 表示当前仍在使用出厂初始密钥，登录后必须先改密。
+	// 仅在已认证的响应里置为 true，避免向匿名访问者泄露“仍是默认密钥”。
+	MustChangePassword bool `json:"mustChangePassword"`
 }
 
 type AuthMeta struct {
