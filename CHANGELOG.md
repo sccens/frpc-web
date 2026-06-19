@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v1.4.0]
 
 ### Security
 - **导入配置校验二进制路径**：导入/恢复备份时，frpc 版本的 `path` 必须位于受管目录
