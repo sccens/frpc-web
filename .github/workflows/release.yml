@@ -98,6 +98,17 @@ jobs:
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
 
+      - name: Sign checksums
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "RELEASE_SIGNING_KEY 未配置，跳过签名（发布产物暂不带签名，自更新将仅做 SHA256 校验）"
+            exit 0
+          fi
+          go run ./cmd/release-sign sign dist/SHA256SUMS
+          cat dist/SHA256SUMS.sig
+
       - name: Create release notes
         run: |
           cat > release_notes.md << 'EOF'
@@ -145,7 +156,7 @@ jobs:
         with:
           files: |
             dist/frpc-web_*
-            dist/SHA256SUMS
+            dist/SHA256SUMS*
           body_path: release_notes.md
           draft: false
           prerelease: false

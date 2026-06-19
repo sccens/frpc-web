@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -71,11 +72,11 @@ type Runtime interface {
 }
 
 var (
-	ErrInvalidInput        = errors.New("invalid input")
-	ErrInvalidCredentials  = errors.New("invalid access key")
-	ErrUnauthorized        = errors.New("unauthorized")
+	ErrInvalidInput           = errors.New("invalid input")
+	ErrInvalidCredentials     = errors.New("invalid access key")
+	ErrUnauthorized           = errors.New("unauthorized")
 	ErrPasswordChangeRequired = errors.New("password change required")
-	ErrNotFound            = errors.New("resource not found")
+	ErrNotFound               = errors.New("resource not found")
 )
 
 // DefaultAccessKey 是出厂初始访问密钥。首次以它登录后会被强制要求改密；
@@ -846,8 +847,18 @@ func (s *Service) ImportConfig(ctx context.Context, input ConfigImportInput) (Ac
 	if err := s.store.SetSetting(ctx, "github_proxy", strings.TrimSpace(input.Bundle.GithubProxy)); err != nil {
 		return ActionResult{}, err
 	}
+	binRoot := filepath.Join(s.store.DataDir(), "bin")
 	for _, version := range input.Bundle.Versions {
 		if strings.TrimSpace(version.Version) == "" || strings.TrimSpace(version.Path) == "" {
+			continue
+		}
+		// 只接受指向受管二进制目录内、且实际存在的文件。否则跳过：
+		// 既防止恶意 bundle 把 version.Path 指向任意可执行文件、在 Start 时被 exec，
+		// 也避免跨机器导入留下路径无效的 version 死记录。
+		if !pathWithinDir(binRoot, version.Path) {
+			continue
+		}
+		if _, err := os.Stat(version.Path); err != nil {
 			continue
 		}
 		_, _ = s.store.AddVersion(ctx, version)
@@ -872,6 +883,24 @@ func (s *Service) ImportConfig(ctx context.Context, input ConfigImportInput) (Ac
 		OK:      true,
 		Message: fmt.Sprintf("导入完成：%d 个服务器，%d 条规则", createdServers, createdRules),
 	}, nil
+}
+
+// pathWithinDir 报告 target 是否位于 dir 目录内（均解析为绝对路径后比较）。
+// 用于导入配置时拒绝指向受管二进制目录之外的 version.Path。
+func pathWithinDir(dir, target string) bool {
+	dirAbs, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(dirAbs, targetAbs)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
 func (s *Service) CurrentVersion(ctx context.Context) FRPCVersion {

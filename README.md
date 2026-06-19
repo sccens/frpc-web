@@ -92,6 +92,13 @@ FRPC_WEB_RESET_KEY=1 frpc-web
 
 重启后用初始密钥（默认 `FrpcWeb-Init-9527` 或你设置的 `FRPC_WEB_ACCESS_KEY`）登录，并按提示重新设置新密码。
 
+## 安全须知
+
+- **内置初始密钥 `FrpcWeb-Init-9527` 是公开的**（任何人都能从源码读到），它只为方便首次本地登录，仅在默认 localhost 绑定下可接受。
+- **任何非 localhost 暴露**（`0.0.0.0`、局域网、公网，或 Docker 把端口直接映射到 `0.0.0.0`）**必须二选一**：启动前把 `FRPC_WEB_ACCESS_KEY` 设为长随机值，或在服务可达后第一时间完成强制改密——否则在你改密之前，任何知道默认密钥的人都能登录接管。程序在公网绑定且仍用默认密钥时会打印 SECURITY 警告。
+- 不内置 HTTPS：公网部署务必放在 HTTPS 反向代理之后，并设 `FRPC_WEB_TRUSTED_PROXY=1`。
+- 配置导出/备份文件含**明文**的 frp token、admin 与 HTTP 密码，请妥善保管，勿提交进仓库或公开分享。
+
 ## 部署
 
 ### systemd（Linux）
@@ -158,6 +165,17 @@ server {
 | 自定义安装目录 | 前面加 `INSTALL_DIR=/path` |
 
 开发用脚本：`scripts/build-release.sh` 构建全平台发布产物（linux/darwin × amd64/arm64）到 `dist/` 并生成 SHA256SUMS，通过 `make release` 调用，可用 `VERSION=` 注入版本号。
+
+### 发布签名（可选，维护者）
+
+发布产物默认只随附 `SHA256SUMS`。若希望一键自更新额外校验 ed25519 签名（抵御恶意下载代理同时替换二进制与校验和），按以下一次性步骤启用：
+
+1. 本地生成密钥对：`go run ./cmd/release-sign keygen`
+2. 把输出的 `PRIVATE`（seed）存为 GitHub 仓库 Secret `RELEASE_SIGNING_KEY`（**切勿提交进仓库**）。
+3. 把 `PUBLIC` 填入 `internal/app/selfupdate.go` 的 `releaseSigningPublicKey`（或构建时用 `-ldflags "-X github.com/sccens/frpc-web/internal/app.releaseSigningPublicKey=<base64>"` 注入），提交。
+4. 之后打 tag 发布时，工作流会自动用该私钥生成并上传 `SHA256SUMS.sig`。
+
+启用后，内置该公钥的版本自更新时强制校验签名，失败即拒绝更新；公钥为空（默认）时仅做 SHA256 校验，不影响发布。注意只有内置公钥的版本及其之后的发布才会被校验。
 
 ## 开发
 

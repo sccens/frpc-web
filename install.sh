@@ -20,6 +20,7 @@ set -e
 #   INSTALL_DIR=/usr/local/bin   二进制安装目录
 #   SKIP_SERVICE=1               只装二进制，不配置 systemd
 #   SOURCE_BIN=path/to/frpc-web  跳过下载，安装本地二进制
+#   INSECURE_SKIP_CHECKSUM=1     跳过 SHA256 校验（默认 fail-closed，不建议）
 
 REPO="sccens/frpc-web"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
@@ -171,20 +172,25 @@ verify_binary() {
     verify_checksum
 }
 
-# 校验 SHA256（发布工作流会随版本发布 SHA256SUMS）
+# 校验 SHA256（发布工作流会随版本发布 SHA256SUMS）。
+# 默认 fail-closed：任何一步无法完成校验都终止安装；确需跳过可设 INSECURE_SKIP_CHECKSUM=1。
 verify_checksum() {
+    if [ "${INSECURE_SKIP_CHECKSUM:-0}" = "1" ]; then
+        warn "已设置 INSECURE_SKIP_CHECKSUM=1，跳过 SHA256 校验（风险自负）"
+        return
+    fi
+
     TMP_SUMS=$(mktemp)
     if ! fetch "$CHECKSUMS_URL" "$TMP_SUMS" 2>/dev/null; then
-        warn "无法下载 SHA256SUMS，跳过校验"
-        rm -f "$TMP_SUMS"
-        return
+        rm -f "$TMP_SUMS" "$TMP_FILE"
+        error "无法下载 SHA256SUMS，无法校验完整性（确需跳过可设 INSECURE_SKIP_CHECKSUM=1，风险自负）"
     fi
 
     EXPECTED=$(grep " $FILENAME\$" "$TMP_SUMS" | awk '{print $1}')
     rm -f "$TMP_SUMS"
     if [ -z "$EXPECTED" ]; then
-        warn "SHA256SUMS 中没有 $FILENAME 的记录，跳过校验"
-        return
+        rm -f "$TMP_FILE"
+        error "SHA256SUMS 中没有 $FILENAME 的记录，无法校验完整性"
     fi
 
     if command -v sha256sum >/dev/null 2>&1; then
@@ -192,8 +198,8 @@ verify_checksum() {
     elif command -v shasum >/dev/null 2>&1; then
         ACTUAL=$(shasum -a 256 "$TMP_FILE" | awk '{print $1}')
     else
-        warn "未找到 sha256sum/shasum，跳过校验"
-        return
+        rm -f "$TMP_FILE"
+        error "未找到 sha256sum/shasum，无法校验完整性（请安装其一，或设 INSECURE_SKIP_CHECKSUM=1 跳过，风险自负）"
     fi
 
     if [ "$ACTUAL" != "$EXPECTED" ]; then

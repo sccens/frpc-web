@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,6 +25,13 @@ const updateRepo = "sccens/frpc-web"
 
 // maxUpdateBinarySize 限制自更新下载的二进制大小，防止异常响应耗尽内存。
 const maxUpdateBinarySize int64 = 64 << 20
+
+// releaseSigningPublicKey 是校验发布产物完整性的 ed25519 公钥（base64）。
+// 留空 = 未启用签名校验（仅 SHA256），便于在配置签名密钥前正常发布；
+// 一旦填入公钥，自更新会强制校验 SHA256SUMS 的签名，失败即拒绝更新。
+// 用 `go run ./cmd/release-sign keygen` 生成密钥对；也可在构建时用
+// -ldflags "-X github.com/sccens/frpc-web/internal/app.releaseSigningPublicKey=<base64>" 注入。
+var releaseSigningPublicKey = ""
 
 type UpdateCheck struct {
 	Current   string `json:"current"`
@@ -88,6 +97,17 @@ func (s *Service) ApplyUpdate(ctx context.Context) (ActionResult, error) {
 	sums, err := s.fetchUpdateAsset(ctx, base+"/SHA256SUMS", 1<<20)
 	if err != nil {
 		return ActionResult{}, fmt.Errorf("下载校验文件失败: %w", err)
+	}
+	// 已配置签名公钥时，先校验 SHA256SUMS 的 ed25519 签名，确保校验和本身可信，
+	// 再用它校验二进制——否则恶意代理可同时替换二进制和校验和。
+	if strings.TrimSpace(releaseSigningPublicKey) != "" {
+		sigB64, err := s.fetchUpdateAsset(ctx, base+"/SHA256SUMS.sig", 1<<20)
+		if err != nil {
+			return ActionResult{}, fmt.Errorf("下载签名文件失败: %w", err)
+		}
+		if err := verifyChecksumSignature(releaseSigningPublicKey, sums, sigB64); err != nil {
+			return ActionResult{}, err
+		}
 	}
 	expected := checksumFromSums(string(sums), asset)
 	if expected == "" {
@@ -195,6 +215,26 @@ func checksumFromSums(sums string, filename string) string {
 		}
 	}
 	return ""
+}
+
+// verifyChecksumSignature 校验 SHA256SUMS 的 ed25519 分离签名。
+// pubB64 为空表示未启用签名校验，直接放行（仅依赖 SHA256）。
+func verifyChecksumSignature(pubB64 string, sums []byte, sigB64 []byte) error {
+	if strings.TrimSpace(pubB64) == "" {
+		return nil
+	}
+	pub, err := base64.StdEncoding.DecodeString(strings.TrimSpace(pubB64))
+	if err != nil || len(pub) != ed25519.PublicKeySize {
+		return errors.New("发布签名公钥配置无效")
+	}
+	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(sigB64)))
+	if err != nil {
+		return errors.New("签名文件格式无效")
+	}
+	if !ed25519.Verify(ed25519.PublicKey(pub), sums, sig) {
+		return errors.New("发布签名校验失败：内容可能被篡改")
+	}
+	return nil
 }
 
 // versionLess 比较形如 v1.2.3 的版本号；任一侧无法解析时返回 false（如 dev 构建）。

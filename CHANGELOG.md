@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+- **导入配置校验二进制路径**：导入/恢复备份时，frpc 版本的 `path` 必须位于受管目录
+  `<data>/bin/` 内且文件存在，否则跳过——防止恶意/共享的配置 bundle 把 `version.path`
+  指向任意可执行文件、在启动时被执行。
+- **安装脚本校验改为 fail-closed**：`install.sh` 无法下载 `SHA256SUMS`、清单中无对应记录、
+  或缺少 `sha256sum`/`shasum` 时直接终止安装（不再 warn 后继续）；确需跳过可设
+  `INSECURE_SKIP_CHECKSUM=1`。
+- **发布签名（可选）**：自更新支持在 SHA256 之外校验 `SHA256SUMS` 的 ed25519 分离签名，
+  抵御恶意下载代理同时替换二进制与校验和。默认休眠（公钥为空时仅做 SHA256）；维护者按
+  README「发布签名」步骤启用。新增 `cmd/release-sign` 辅助工具。
+
 ## [v1.3.0]
 
 ### Changed
