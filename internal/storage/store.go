@@ -134,6 +134,13 @@ func (s *Store) save() error {
 		_ = os.Remove(tmpPath)
 		return err
 	}
+	// 先 fsync 再 rename：保证崩溃后磁盘上要么是旧文件、要么是完整的新文件，
+	// 不会把只写了一半的内容 rename 成正式状态文件。
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpPath)
 		return err

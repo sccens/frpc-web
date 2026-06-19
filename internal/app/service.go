@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -98,6 +99,10 @@ type Service struct {
 	restartMu       sync.Mutex
 	restartAttempts map[string]int
 	restartTimers   map[string]*time.Timer
+	// opMu/opLocks 提供按服务器维度的操作锁，串行化同一服务器的
+	// 启动/停止/重启/重载，避免并发请求拉起重复进程或竞争配置文件。
+	opMu    sync.Mutex
+	opLocks map[string]*sync.Mutex
 }
 
 func NewService(opts Options) *Service {
@@ -112,6 +117,7 @@ func NewService(opts Options) *Service {
 		version:         version,
 		restartAttempts: map[string]int{},
 		restartTimers:   map[string]*time.Timer{},
+		opLocks:         map[string]*sync.Mutex{},
 	}
 	if opts.Runtime != nil {
 		opts.Runtime.SetExitHandler(svc.handleRuntimeExit)
@@ -211,7 +217,7 @@ func (s *Service) handleRuntimeExit(serverID string, exitErr error) {
 		}
 		delete(s.restartTimers, serverID)
 		s.restartMu.Unlock()
-		result := s.start(context.Background(), serverID, false)
+		result := s.startLocked(context.Background(), serverID)
 		if !result.OK {
 			_ = s.store.SetServerStatus(context.Background(), serverID, "error")
 			_ = s.store.AddHealth(context.Background(), serverID, "warning", fmt.Sprintf("自动重启失败: %s", result.Message))
@@ -566,8 +572,30 @@ func (s *Service) DeleteRule(ctx context.Context, serverID, ruleID string) error
 }
 
 func (s *Service) Start(ctx context.Context, serverID string) ActionResult {
+	defer s.lockServer(serverID)()
 	s.resetRestartAttempts(serverID)
 	return s.start(ctx, serverID, true)
+}
+
+// lockServer 锁定指定服务器的操作锁并返回解锁函数，典型用法 `defer s.lockServer(id)()`。
+// 不同服务器使用各自的锁，互不阻塞。
+func (s *Service) lockServer(serverID string) func() {
+	s.opMu.Lock()
+	mu := s.opLocks[serverID]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		s.opLocks[serverID] = mu
+	}
+	s.opMu.Unlock()
+	mu.Lock()
+	return mu.Unlock
+}
+
+// startLocked 在持有服务器操作锁的前提下执行一次启动，供自动重启定时器调用，
+// 与手动 Start/Stop/Restart 串行，避免并发拉起重复进程。
+func (s *Service) startLocked(ctx context.Context, serverID string) ActionResult {
+	defer s.lockServer(serverID)()
+	return s.start(ctx, serverID, false)
 }
 
 func (s *Service) start(ctx context.Context, serverID string, resetAttemptsOnSuccess bool) ActionResult {
@@ -609,7 +637,12 @@ func (s *Service) start(ctx context.Context, serverID string, resetAttemptsOnSuc
 }
 
 func (s *Service) Stop(ctx context.Context, serverID string) ActionResult {
+	defer s.lockServer(serverID)()
 	s.resetRestartAttempts(serverID)
+	return s.stopInner(ctx, serverID)
+}
+
+func (s *Service) stopInner(ctx context.Context, serverID string) ActionResult {
 	server, err := s.store.GetServer(ctx, serverID)
 	if err != nil {
 		return errorResult(err)
@@ -630,14 +663,16 @@ func (s *Service) Stop(ctx context.Context, serverID string) ActionResult {
 }
 
 func (s *Service) Restart(ctx context.Context, serverID string) ActionResult {
-	stop := s.Stop(ctx, serverID)
-	if !stop.OK {
+	defer s.lockServer(serverID)()
+	s.resetRestartAttempts(serverID)
+	if stop := s.stopInner(ctx, serverID); !stop.OK {
 		return stop
 	}
-	return s.Start(ctx, serverID)
+	return s.start(ctx, serverID, true)
 }
 
 func (s *Service) Reload(ctx context.Context, serverID string) ActionResult {
+	defer s.lockServer(serverID)()
 	server, err := s.store.GetServer(ctx, serverID)
 	if err != nil {
 		return errorResult(err)
@@ -667,6 +702,7 @@ func (s *Service) Reload(ctx context.Context, serverID string) ActionResult {
 }
 
 func (s *Service) Check(ctx context.Context, serverID string) ActionResult {
+	defer s.lockServer(serverID)()
 	server, err := s.store.GetServer(ctx, serverID)
 	if err != nil {
 		return errorResult(err)
@@ -698,12 +734,18 @@ func (s *Service) applyConfig(ctx context.Context, serverID string) (ConfigPrevi
 	return s.runtime.RenderConfig(ctx, server)
 }
 
+// maxLogTail 限制单次日志请求返回的行数上限，防止异常大的 tail 参数。
+const maxLogTail = 5000
+
 func (s *Service) Logs(ctx context.Context, serverID string, tail int) ([]LogLine, error) {
 	if _, err := s.store.GetServer(ctx, serverID); err != nil {
 		return nil, err
 	}
 	if tail <= 0 {
 		tail = 200
+	}
+	if tail > maxLogTail {
+		tail = maxLogTail
 	}
 	return s.runtime.Logs(ctx, serverID, tail)
 }
@@ -846,8 +888,18 @@ func (s *Service) ImportConfig(ctx context.Context, input ConfigImportInput) (Ac
 	if err := s.store.SetSetting(ctx, "github_proxy", strings.TrimSpace(input.Bundle.GithubProxy)); err != nil {
 		return ActionResult{}, err
 	}
+	binRoot := filepath.Join(s.store.DataDir(), "bin")
 	for _, version := range input.Bundle.Versions {
 		if strings.TrimSpace(version.Version) == "" || strings.TrimSpace(version.Path) == "" {
+			continue
+		}
+		// 只接受指向受管二进制目录内、且实际存在的文件。否则跳过：
+		// 既防止恶意 bundle 把 version.Path 指向任意可执行文件、在 Start 时被 exec，
+		// 也避免跨机器导入留下路径无效的 version 死记录。
+		if !pathWithinDir(binRoot, version.Path) {
+			continue
+		}
+		if _, err := os.Stat(version.Path); err != nil {
 			continue
 		}
 		_, _ = s.store.AddVersion(ctx, version)
@@ -872,6 +924,24 @@ func (s *Service) ImportConfig(ctx context.Context, input ConfigImportInput) (Ac
 		OK:      true,
 		Message: fmt.Sprintf("导入完成：%d 个服务器，%d 条规则", createdServers, createdRules),
 	}, nil
+}
+
+// pathWithinDir 报告 target 是否位于 dir 目录内（均解析为绝对路径后比较）。
+// 用于导入配置时拒绝指向受管二进制目录之外的 version.Path。
+func pathWithinDir(dir, target string) bool {
+	dirAbs, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(dirAbs, targetAbs)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
 func (s *Service) CurrentVersion(ctx context.Context) FRPCVersion {

@@ -456,6 +456,13 @@ func writeResultStatus(w http.ResponseWriter, okStatus int, payload any, err err
 		} else if errors.Is(err, app.ErrNotFound) {
 			status = http.StatusNotFound
 		}
+		// 5xx 往往携带内部细节（文件路径、底层错误），只记服务端日志，
+		// 对客户端返回笼统文案，避免向已登录用户泄露实现细节。
+		if status >= http.StatusInternalServerError {
+			slog.Error("request handler error", "error", err.Error())
+			writeError(w, status, "服务器内部错误，请稍后重试或查看服务端日志")
+			return
+		}
 		writeError(w, status, err.Error())
 		return
 	}

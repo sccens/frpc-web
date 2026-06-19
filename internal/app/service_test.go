@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/sccens/frpc-web/internal/app"
@@ -330,6 +332,58 @@ func TestIsValidHeaderName(t *testing.T) {
 		if got := app.IsValidHeaderName(name); got != want {
 			t.Fatalf("IsValidHeaderName(%q) = %v, want %v", name, got, want)
 		}
+	}
+}
+
+// 恶意/共享的配置 bundle 不能通过 version.Path 指向受管目录之外的可执行文件，
+// 否则激活后 Start 会 exec 它。导入时必须拒绝目录外路径，只保留受管目录内真实存在的二进制。
+func TestImportRejectsVersionPathOutsideManagedDir(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := storage.Open(ctx, dataDir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	svc := app.NewService(app.Options{Store: store, Runtime: &fakeRuntime{}, Addr: "127.0.0.1:8080"})
+
+	// 受管目录内、真实存在的二进制：应被接受。
+	legitPath := filepath.Join(dataDir, "bin", "frpc", "9.9.9", "frpc")
+	if err := os.MkdirAll(filepath.Dir(legitPath), 0o700); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	if err := os.WriteFile(legitPath, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatalf("write legit binary: %v", err)
+	}
+
+	if _, err := svc.ImportConfig(ctx, app.ConfigImportInput{
+		Mode: "merge",
+		Bundle: app.ConfigBundle{
+			Version: 1,
+			Versions: []app.FRPCVersion{
+				{Version: "evil", Path: "/bin/sh", Installed: true, Active: true},
+				{Version: "9.9.9", Path: legitPath, Installed: true},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	versions, err := svc.Versions(ctx)
+	if err != nil {
+		t.Fatalf("list versions: %v", err)
+	}
+	foundLegit := false
+	for _, v := range versions {
+		if v.Path == "/bin/sh" || v.Version == "evil" {
+			t.Fatalf("import accepted out-of-tree version path: %#v", v)
+		}
+		if v.Path == legitPath {
+			foundLegit = true
+		}
+	}
+	if !foundLegit {
+		t.Fatalf("import dropped legitimate in-tree version; got %#v", versions)
 	}
 }
 
