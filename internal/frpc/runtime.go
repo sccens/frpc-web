@@ -571,7 +571,6 @@ func headerPairs(values []string) []headerPair {
 	return out
 }
 
-
 func binaryVersion(path string) (string, error) {
 	out, err := exec.Command(path, "--version").CombinedOutput()
 	if err != nil {

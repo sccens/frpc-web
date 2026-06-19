@@ -71,11 +71,11 @@ type Runtime interface {
 }
 
 var (
-	ErrInvalidInput        = errors.New("invalid input")
-	ErrInvalidCredentials  = errors.New("invalid access key")
-	ErrUnauthorized        = errors.New("unauthorized")
+	ErrInvalidInput           = errors.New("invalid input")
+	ErrInvalidCredentials     = errors.New("invalid access key")
+	ErrUnauthorized           = errors.New("unauthorized")
 	ErrPasswordChangeRequired = errors.New("password change required")
-	ErrNotFound            = errors.New("resource not found")
+	ErrNotFound               = errors.New("resource not found")
 )
 
 // DefaultAccessKey 是出厂初始访问密钥。首次以它登录后会被强制要求改密；

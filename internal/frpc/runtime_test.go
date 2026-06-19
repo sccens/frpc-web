@@ -20,7 +20,8 @@ import (
 	"github.com/sccens/frpc-web/internal/app"
 )
 
-func writeFakeFRPC(t *testing.T, dir, body string) string {	t.Helper()
+func writeFakeFRPC(t *testing.T, dir, body string) string {
+	t.Helper()
 	script := filepath.Join(dir, "fake-frpc")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
 		t.Fatal(err)
