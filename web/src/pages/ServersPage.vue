@@ -1,19 +1,25 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Pencil, Plus, Search, SlidersHorizontal, Trash2, X } from 'lucide-vue-next'
+import { Pencil, Plus, Radar, Search, SlidersHorizontal, Trash2, X } from 'lucide-vue-next'
 import {
+  adoptFrpcProcess,
   checkServer,
   createRule,
   createServer,
   deleteRule,
   deleteServer,
+  discoverFrpc,
   getServers,
+  importFrpcConfig,
+  registerFrpcBinary,
   reloadServer,
   restartServer,
   startServer,
   stopServer,
   updateRule,
   updateServer,
+  type FrpcDiscovery,
+  type FrpcProcessCandidate,
   type ProxyRule,
   type ProxyRuleInput,
   type Server,
@@ -90,6 +96,116 @@ async function loadServers() {
 onMounted(() => {
   void loadServers()
 })
+
+// ——— 接管已有 frpc：扫描系统二进制/运行中进程、登记、纳管、导入配置 ———
+const discovery = ref<FrpcDiscovery | null>(null)
+const discovering = ref(false)
+const registeringPath = ref('')
+const adoptingPid = ref(0)
+const adoptMode = ref<'restart' | 'attach'>('restart')
+const importDrawerOpen = ref(false)
+const importing = ref(false)
+const importForm = ref({ name: '', content: '', autoStart: false })
+
+async function scanExisting() {
+  discovering.value = true
+  try {
+    discovery.value = await discoverFrpc()
+    const { binaries, processes } = discovery.value
+    if (binaries.length === 0 && processes.length === 0) {
+      ElMessage.info('未发现系统中已安装的 frpc 二进制或正在运行的 frpc 进程')
+    } else {
+      ElMessage.success(`发现 ${binaries.length} 个二进制、${processes.length} 个运行中进程`)
+    }
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '扫描失败'))
+  } finally {
+    discovering.value = false
+  }
+}
+
+async function registerBinary(path: string) {
+  registeringPath.value = path
+  try {
+    const version = await registerFrpcBinary({ path })
+    ElMessage.success(`已登记并启用 frpc ${version.version}`)
+    await scanExisting()
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '登记二进制失败'))
+  } finally {
+    registeringPath.value = ''
+  }
+}
+
+async function adoptProcess(proc: FrpcProcessCandidate) {
+  if (adoptMode.value === 'restart') {
+    try {
+      await ElMessageBox.confirm(
+        '将停止该进程并由面板用其配置重新拉起（隧道会短暂重连）。若该进程由 systemd/supervisor 托管，请先停用其服务单元，否则会被重新拉起并冲突。',
+        '重启接管',
+        { type: 'warning', confirmButtonText: '接管', cancelButtonText: '取消' },
+      )
+    } catch {
+      return
+    }
+  }
+  adoptingPid.value = proc.pid
+  try {
+    const result = await adoptFrpcProcess({
+      pid: proc.pid,
+      configPath: proc.configPath,
+      name: '',
+      mode: adoptMode.value,
+    })
+    if (result.started) {
+      ElMessage.success(result.message || '已纳管')
+    } else {
+      ElMessage.warning(result.message || '已导入配置，但未能启动')
+    }
+    await Promise.all([loadServers(), scanExisting()])
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '纳管失败'))
+  } finally {
+    adoptingPid.value = 0
+  }
+}
+
+function openImportConfig() {
+  importForm.value = { name: '', content: '', autoStart: false }
+  importDrawerOpen.value = true
+}
+
+async function pickImportConfigFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (file) {
+    importForm.value.content = await file.text()
+    if (!importForm.value.name) importForm.value.name = file.name.replace(/\.(toml|ini|conf)$/i, '')
+  }
+  input.value = ''
+}
+
+async function submitImportConfig() {
+  if (!importForm.value.content.trim()) {
+    ElMessage.warning('请粘贴或选择 frpc 配置文件内容')
+    return
+  }
+  importing.value = true
+  try {
+    const server = await importFrpcConfig({
+      name: importForm.value.name.trim(),
+      content: importForm.value.content,
+      autoStart: importForm.value.autoStart,
+    })
+    ElMessage.success(`已导入服务器「${server.name}」，含 ${server.proxyCount} 条规则`)
+    importDrawerOpen.value = false
+    await loadServers()
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '导入配置失败'))
+  } finally {
+    importing.value = false
+  }
+}
 
 function defaultServerForm(): ServerInput {
   return {
@@ -366,6 +482,85 @@ function localTarget(rule: ProxyRule) {
 
 <template>
   <div class="page-stack animate-enter" v-loading="loading">
+    <section class="surface-panel">
+      <div class="section-heading">
+        <div>
+          <p class="overline">Adopt Existing</p>
+          <h2>接管已有 frpc</h2>
+          <span>扫描系统中已安装的 frpc 与正在运行的进程，或导入现成的配置文件</span>
+        </div>
+        <div class="row-actions">
+          <button class="ghost-action strong" type="button" :disabled="discovering" @click="scanExisting">
+            <Radar :size="15" :stroke-width="1.8" />
+            {{ discovering ? '扫描中…' : '扫描系统' }}
+          </button>
+          <button class="primary-action" type="button" @click="openImportConfig">
+            <Plus :size="15" :stroke-width="1.8" />
+            导入配置
+          </button>
+        </div>
+      </div>
+
+      <template v-if="discovery">
+        <div class="rule-toolbar">
+          <span class="overline">已安装的 frpc 二进制</span>
+        </div>
+        <div class="version-registry">
+          <article v-for="bin in discovery.binaries" :key="bin.path" class="session-row version-row">
+            <div class="settings-row-copy">
+              <p class="overline">{{ bin.managed ? 'Managed' : 'System' }}</p>
+              <strong>{{ bin.version }}</strong>
+              <div class="session-meta">
+                <code class="version-path" :title="bin.path">{{ bin.path }}</code>
+              </div>
+            </div>
+            <span v-if="bin.managed" class="muted-inline">已纳入管理</span>
+            <button
+              v-else
+              class="ghost-action strong"
+              type="button"
+              :disabled="registeringPath === bin.path"
+              @click="registerBinary(bin.path)"
+            >
+              {{ registeringPath === bin.path ? '登记中…' : '登记并启用' }}
+            </button>
+          </article>
+          <div v-if="discovery.binaries.length === 0" class="empty-state">未发现已安装的 frpc 二进制</div>
+        </div>
+
+        <div class="rule-toolbar">
+          <span class="overline">正在运行的 frpc 进程</span>
+          <select v-model="adoptMode" class="native-select compact">
+            <option value="restart">重启接管（完整托管）</option>
+            <option value="attach">直接附着（零中断）</option>
+          </select>
+        </div>
+        <div class="version-registry">
+          <article v-for="proc in discovery.processes" :key="proc.pid" class="session-row version-row">
+            <div class="settings-row-copy">
+              <p class="overline">PID {{ proc.pid }}</p>
+              <strong>{{ proc.configPath || '未知配置路径' }}</strong>
+              <div class="session-meta">
+                <code class="version-path" :title="proc.exe">{{ proc.exe || '二进制路径未知' }}</code>
+              </div>
+            </div>
+            <span v-if="proc.managed" class="muted-inline">已纳管</span>
+            <button
+              v-else
+              class="ghost-action strong"
+              type="button"
+              :disabled="adoptingPid === proc.pid || !proc.configPath"
+              @click="adoptProcess(proc)"
+            >
+              {{ adoptingPid === proc.pid ? '纳管中…' : '纳管' }}
+            </button>
+          </article>
+          <div v-if="discovery.processes.length === 0" class="empty-state">未发现正在运行的 frpc 进程</div>
+        </div>
+      </template>
+      <div v-else class="empty-state">点击「扫描系统」发现已安装的 frpc 二进制和正在运行的进程</div>
+    </section>
+
     <ServerTable
       :servers="servers"
       @add="openCreateServer"
@@ -443,6 +638,65 @@ function localTarget(rule: ProxyRule) {
         </table>
       </div>
     </section>
+
+    <Teleport to="body">
+      <div v-if="importDrawerOpen" class="drawer-layer">
+        <button class="drawer-backdrop" type="button" aria-label="关闭抽屉" @click="importDrawerOpen = false" />
+        <aside class="rule-drawer">
+          <header class="drawer-header">
+            <div>
+              <p class="overline">Import Config</p>
+              <h2>导入 frpc 配置</h2>
+            </div>
+            <button class="icon-button ghost" type="button" aria-label="关闭" @click="importDrawerOpen = false">
+              <X :size="16" :stroke-width="1.8" />
+            </button>
+          </header>
+
+          <div class="drawer-body">
+            <section class="form-section">
+              <label>
+                <span>节点名称（可选）</span>
+                <input v-model="importForm.name" placeholder="留空则自动命名" />
+              </label>
+              <label>
+                <span>配置内容（frpc.toml 或旧版 .ini）</span>
+                <textarea
+                  v-model="importForm.content"
+                  rows="14"
+                  placeholder="粘贴 frpc 配置原文，或用下方「从文件载入」选择文件"
+                />
+              </label>
+              <div class="form-grid">
+                <label>
+                  <span>导入后自动启动</span>
+                  <select v-model="importForm.autoStart">
+                    <option :value="false">否</option>
+                    <option :value="true">是</option>
+                  </select>
+                </label>
+                <label>
+                  <span>从文件载入</span>
+                  <input type="file" accept=".toml,.ini,.conf" @change="pickImportConfigFile" />
+                </label>
+              </div>
+              <p class="muted-inline">
+                导入只会创建面板里的服务器与规则，不会启动进程；token/密码等密钥会原样保存。
+              </p>
+            </section>
+          </div>
+
+          <footer class="drawer-footer">
+            <button class="primary-action wide" type="button" :disabled="importing" @click="submitImportConfig">
+              {{ importing ? '导入中…' : '导入为服务器' }}
+            </button>
+            <button class="ghost-action strong" type="button" :disabled="importing" @click="importDrawerOpen = false">
+              取消
+            </button>
+          </footer>
+        </aside>
+      </div>
+    </Teleport>
 
     <Teleport to="body">
       <div v-if="serverDrawerOpen" class="drawer-layer">

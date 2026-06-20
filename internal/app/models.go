@@ -226,6 +226,60 @@ type FRPCInstallOnlineInput struct {
 	GithubProxy string `json:"githubProxy"`
 }
 
+// FRPCBinaryCandidate 是在系统 PATH 及常见安装目录中发现的、可直接登记使用的
+// frpc 二进制（典型来源：apt、官方安装脚本、手动放到 /usr/local/bin）。
+type FRPCBinaryCandidate struct {
+	Path    string `json:"path"`
+	Version string `json:"version"`
+	// Managed 表示该路径位于本面板的受管目录内（已通过在线/离线安装登记过）。
+	Managed bool `json:"managed"`
+}
+
+// FRPCProcessCandidate 是发现的、当前正在运行的 frpc 进程。可能由 systemd、
+// supervisor 或手动启动，不一定是本面板拉起的。
+type FRPCProcessCandidate struct {
+	PID        int    `json:"pid"`
+	Exe        string `json:"exe"`        // 进程对应的二进制路径，部分平台/权限下可能为空
+	ConfigPath string `json:"configPath"` // 命令行 -c/--config 指定的配置文件，可能为空
+	// Managed 表示该 PID 已被本面板纳管（命中 state.json 中的进程记录）。
+	Managed  bool   `json:"managed"`
+	ServerID string `json:"serverId,omitempty"` // 已纳管时对应的服务器 ID
+}
+
+// FRPCDiscovery 汇总一次「发现已有 frpc」的结果：可登记的二进制 + 运行中的进程。
+type FRPCDiscovery struct {
+	Binaries  []FRPCBinaryCandidate  `json:"binaries"`
+	Processes []FRPCProcessCandidate `json:"processes"`
+}
+
+// RegisterBinaryInput 把系统中已存在的某个 frpc 二进制登记为可用版本，免去重新下载。
+type RegisterBinaryInput struct {
+	Path string `json:"path"`
+}
+
+// ImportFrpcConfigInput 把一段现成的 frpc 配置（frp v0.52+ 的 TOML 或旧版 INI）
+// 解析并导入为一台新的服务器（含其全部代理规则）。
+type ImportFrpcConfigInput struct {
+	Name      string `json:"name"`      // 可选；留空时自动命名
+	Content   string `json:"content"`   // 配置文件原文
+	AutoStart bool   `json:"autoStart"` // 导入后是否随面板自动启动
+}
+
+// AdoptProcessInput 纳管一个正在运行的 frpc 进程：先读取其配置文件导入为服务器，
+// 再按 Mode 接管该进程。
+//
+// Mode 取值：
+//   - "restart"（默认）：停掉外部进程，由面板用导入后的配置重新拉起。
+//     纳管后日志、重载、自动重启等能力完整，代价是一次短暂的隧道重连。
+//   - "attach"：直接附着到现有进程，不重启。隧道零中断，但面板拿不到原始
+//     stdout/stderr 日志，重载依赖 admin API。
+type AdoptProcessInput struct {
+	PID        int    `json:"pid"`
+	ConfigPath string `json:"configPath"`
+	Name       string `json:"name"`
+	Mode       string `json:"mode"`
+}
+
 type ProcessInfo struct {
 	ServerID    string `json:"serverId"`
 	PID         int    `json:"pid"`

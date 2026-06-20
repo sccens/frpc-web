@@ -56,6 +56,8 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("GET /api/proxies/status", api.proxiesStatus)
 	mux.HandleFunc("GET /api/servers", api.listServers)
 	mux.HandleFunc("POST /api/servers", api.createServer)
+	mux.HandleFunc("POST /api/servers/import-frpc", api.importFrpcConfig)
+	mux.HandleFunc("POST /api/servers/adopt", api.adoptProcess)
 	mux.HandleFunc("GET /api/servers/{id}", api.getServer)
 	mux.HandleFunc("PUT /api/servers/{id}", api.updateServer)
 	mux.HandleFunc("DELETE /api/servers/{id}", api.deleteServer)
@@ -72,6 +74,8 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("GET /api/servers/{id}/config/preview", api.configPreview)
 	mux.HandleFunc("GET /api/frpc/version", api.currentVersion)
 	mux.HandleFunc("GET /api/frpc/versions", api.versions)
+	mux.HandleFunc("GET /api/frpc/discover", api.discoverFRPC)
+	mux.HandleFunc("POST /api/frpc/register", api.registerBinary)
 	mux.HandleFunc("POST /api/frpc/versions/{id}/activate", api.activateVersion)
 	mux.HandleFunc("POST /api/frpc/check-latest", api.checkLatest)
 	mux.HandleFunc("POST /api/frpc/install/online", api.installOnline)
@@ -270,6 +274,24 @@ func (h apiHandler) createServer(w http.ResponseWriter, r *http.Request) {
 	writeResultStatus(w, http.StatusCreated, payload, err)
 }
 
+func (h apiHandler) importFrpcConfig(w http.ResponseWriter, r *http.Request) {
+	var input app.ImportFrpcConfigInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	payload, err := h.service.ImportFrpcConfig(r.Context(), input)
+	writeResultStatus(w, http.StatusCreated, payload, err)
+}
+
+func (h apiHandler) adoptProcess(w http.ResponseWriter, r *http.Request) {
+	var input app.AdoptProcessInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	payload, err := h.service.AdoptProcess(r.Context(), input)
+	writeResultStatus(w, http.StatusCreated, payload, err)
+}
+
 func (h apiHandler) getServer(w http.ResponseWriter, r *http.Request) {
 	payload, err := h.service.Server(r.Context(), r.PathValue("id"))
 	writeResult(w, payload, err)
@@ -360,6 +382,20 @@ func (h apiHandler) currentVersion(w http.ResponseWriter, r *http.Request) {
 func (h apiHandler) versions(w http.ResponseWriter, r *http.Request) {
 	payload, err := h.service.Versions(r.Context())
 	writeResult(w, payload, err)
+}
+
+func (h apiHandler) discoverFRPC(w http.ResponseWriter, r *http.Request) {
+	payload, err := h.service.DiscoverFRPC(r.Context())
+	writeResult(w, payload, err)
+}
+
+func (h apiHandler) registerBinary(w http.ResponseWriter, r *http.Request) {
+	var input app.RegisterBinaryInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	payload, err := h.service.RegisterBinary(r.Context(), input)
+	writeResultStatus(w, http.StatusCreated, payload, err)
 }
 
 func (h apiHandler) activateVersion(w http.ResponseWriter, r *http.Request) {

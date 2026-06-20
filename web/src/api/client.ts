@@ -127,6 +127,48 @@ export interface FrpcVersion {
   createdAt: string
 }
 
+export interface FrpcBinaryCandidate {
+  path: string
+  version: string
+  managed: boolean
+}
+
+export interface FrpcProcessCandidate {
+  pid: number
+  exe: string
+  configPath: string
+  managed: boolean
+  serverId?: string
+}
+
+export interface FrpcDiscovery {
+  binaries: FrpcBinaryCandidate[]
+  processes: FrpcProcessCandidate[]
+}
+
+export interface RegisterBinaryInput {
+  path: string
+}
+
+export interface ImportFrpcConfigInput {
+  name: string
+  content: string
+  autoStart: boolean
+}
+
+export interface AdoptProcessInput {
+  pid: number
+  configPath: string
+  name: string
+  mode: 'restart' | 'attach'
+}
+
+export interface AdoptResult {
+  server: Server
+  started: boolean
+  message: string
+}
+
 export interface Settings {
   addr: string
   githubProxy: string
@@ -459,5 +501,25 @@ export async function installFrpcOffline(file: File) {
   const body = new FormData()
   body.append('file', file)
   const { data } = await http.post<FrpcVersion>('/frpc/install/offline', body)
+  return data
+}
+
+export async function discoverFrpc() {
+  const { data } = await http.get<FrpcDiscovery>('/frpc/discover')
+  return data
+}
+
+export async function registerFrpcBinary(input: RegisterBinaryInput) {
+  const { data } = await http.post<FrpcVersion>('/frpc/register', input)
+  return data
+}
+
+export async function importFrpcConfig(input: ImportFrpcConfigInput) {
+  const { data } = await http.post<Server>('/servers/import-frpc', input)
+  return data
+}
+
+export async function adoptFrpcProcess(input: AdoptProcessInput) {
+  const { data } = await http.post<AdoptResult>('/servers/adopt', input)
   return data
 }

@@ -394,6 +394,10 @@ type fakeRuntime struct {
 	alive         bool
 	proxyStatuses []app.ProxyStatus
 	proxyErr      error
+	binaries      []app.FRPCBinaryCandidate
+	processes     []app.FRPCProcessCandidate
+	processErr    error
+	registerErr   error
 }
 
 func (r *fakeRuntime) RenderConfig(context.Context, app.Server) (app.ConfigPreview, error) {
@@ -458,3 +462,18 @@ func (r *fakeRuntime) ProcessAlive(context.Context, int) bool {
 func (r *fakeRuntime) SetExitHandler(func(string, error)) {}
 
 func (r *fakeRuntime) Adopt(string, int) {}
+
+func (r *fakeRuntime) DiscoverBinaries() []app.FRPCBinaryCandidate {
+	return r.binaries
+}
+
+func (r *fakeRuntime) DiscoverProcesses() ([]app.FRPCProcessCandidate, error) {
+	return r.processes, r.processErr
+}
+
+func (r *fakeRuntime) RegisterBinary(path string) (app.FRPCVersion, error) {
+	if r.registerErr != nil {
+		return app.FRPCVersion{}, r.registerErr
+	}
+	return app.FRPCVersion{Version: "system", Path: path, Source: "system", Installed: true}, nil
+}

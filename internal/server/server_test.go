@@ -297,3 +297,13 @@ func (r *serverFakeRuntime) ProcessAlive(context.Context, int) bool {
 func (r *serverFakeRuntime) SetExitHandler(func(string, error)) {}
 
 func (r *serverFakeRuntime) Adopt(string, int) {}
+
+func (r *serverFakeRuntime) DiscoverBinaries() []app.FRPCBinaryCandidate { return nil }
+
+func (r *serverFakeRuntime) DiscoverProcesses() ([]app.FRPCProcessCandidate, error) {
+	return nil, nil
+}
+
+func (r *serverFakeRuntime) RegisterBinary(path string) (app.FRPCVersion, error) {
+	return app.FRPCVersion{Version: "system", Path: path, Source: "system", Installed: true}, nil
+}

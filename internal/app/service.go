@@ -68,6 +68,9 @@ type Runtime interface {
 	LatestVersion(ctx context.Context, githubProxy string) (string, error)
 	ProcessAlive(ctx context.Context, pid int) bool
 	Adopt(serverID string, pid int)
+	DiscoverBinaries() []FRPCBinaryCandidate
+	DiscoverProcesses() ([]FRPCProcessCandidate, error)
+	RegisterBinary(path string) (FRPCVersion, error)
 	SetExitHandler(handler func(serverID string, err error))
 }
 
