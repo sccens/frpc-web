@@ -242,8 +242,12 @@ type FRPCProcessCandidate struct {
 	Exe        string `json:"exe"`        // 进程对应的二进制路径，部分平台/权限下可能为空
 	ConfigPath string `json:"configPath"` // 命令行 -c/--config 指定的配置文件，可能为空
 	// Managed 表示该 PID 已被本面板纳管（命中 state.json 中的进程记录）。
-	Managed  bool   `json:"managed"`
-	ServerID string `json:"serverId,omitempty"` // 已纳管时对应的服务器 ID
+	Managed         bool   `json:"managed"`
+	ServerID        string `json:"serverId,omitempty"`        // 已纳管时对应的服务器 ID
+	SystemdManaged  bool   `json:"systemdManaged"`            // 是否由 systemd 托管
+	SystemdUnit     string `json:"systemdUnit,omitempty"`     // systemd 服务单元名称
+	HasAdminAPI     bool   `json:"hasAdminApi"`               // 配置文件中是否启用了 admin API
+	AdminAPIAddress string `json:"adminApiAddress,omitempty"` // admin API 地址（如果有）
 }
 
 // FRPCDiscovery 汇总一次「发现已有 frpc」的结果：可登记的二进制 + 运行中的进程。

@@ -160,6 +160,25 @@ func (s *Service) AdoptProcess(ctx context.Context, input AdoptProcessInput) (Ad
 			Message: "已导入配置，但没有可用的 frpc 二进制，无法重启接管。请先登记二进制，或改用 attach 模式。",
 		}, nil
 	}
+
+	// 检查 systemd 管理和 admin API
+	warnings := []string{}
+	if match.SystemdManaged {
+		unitInfo := ""
+		if match.SystemdUnit != "" {
+			unitInfo = fmt.Sprintf("（%s）", match.SystemdUnit)
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"⚠️ 该进程由 systemd 托管%s。停止后 systemd 可能立即重启它，导致与面板冲突。"+
+				"建议先手动停用服务：sudo systemctl disable --now %s",
+			unitInfo, match.SystemdUnit))
+	}
+	if !match.HasAdminAPI {
+		warnings = append(warnings,
+			"⚠️ 配置文件中未启用 admin API（webServer），面板重启后可能无法完全控制进程。"+
+			"面板会自动添加 admin API 配置。")
+	}
+
 	// 用外部 PID 构造一条进程记录，借 Stop 的 PID 分支结束它（会等待其真正退出，
 	// 释放 admin 端口），随后由面板启动同一份配置。
 	stopResult := s.runtime.Stop(ctx, server, ProcessInfo{ServerID: server.ID, PID: input.PID})
@@ -175,8 +194,10 @@ func (s *Service) AdoptProcess(ctx context.Context, input AdoptProcessInput) (Ad
 	adopted, _ := s.Server(ctx, server.ID)
 	message := startResult.Message
 	if startResult.OK {
-		message = "已纳管：原进程已停止，面板已用导入的配置重新启动 frpc。" +
-			"提示：若该进程原由 systemd/supervisor 托管，请停用其服务单元，否则会被重新拉起并与面板实例冲突。"
+		message = "✅ 已纳管：原进程已停止，面板已用导入的配置重新启动 frpc。"
+		if len(warnings) > 0 {
+			message += "\n\n" + strings.Join(warnings, "\n")
+		}
 	}
 	return AdoptResult{Server: adopted, Started: startResult.OK, Message: message}, nil
 }

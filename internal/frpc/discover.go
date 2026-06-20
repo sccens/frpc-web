@@ -119,10 +119,22 @@ func discoverProcessesProc() ([]app.FRPCProcessCandidate, error) {
 			continue
 		}
 		exe, _ := os.Readlink(filepath.Join("/proc", entry.Name(), "exe"))
+		configPath := configPathFromArgs(args)
+
+		// 检测 systemd 管理
+		systemdManaged, systemdUnit := isSystemdManaged(pid)
+
+		// 检测 admin API 配置
+		hasAdminAPI, adminAddr := checkAdminAPI(configPath)
+
 		out = append(out, app.FRPCProcessCandidate{
-			PID:        pid,
-			Exe:        exe,
-			ConfigPath: configPathFromArgs(args),
+			PID:             pid,
+			Exe:             exe,
+			ConfigPath:      configPath,
+			SystemdManaged:  systemdManaged,
+			SystemdUnit:     systemdUnit,
+			HasAdminAPI:     hasAdminAPI,
+			AdminAPIAddress: adminAddr,
 		})
 	}
 	return out, nil
@@ -228,3 +240,124 @@ func pathWithin(dir, target string) bool {
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
+
+// isSystemdManaged 检测进程是否由 systemd 托管
+func isSystemdManaged(pid int) (bool, string) {
+	if runtime.GOOS != "linux" {
+		return false, ""
+	}
+
+	// 方法1：检查 cgroup 是否包含 systemd
+	cgroupPath := filepath.Join("/proc", strconv.Itoa(pid), "cgroup")
+	if data, err := os.ReadFile(cgroupPath); err == nil {
+		content := string(data)
+		if strings.Contains(content, "systemd") || strings.Contains(content, ".service") {
+			// 尝试提取服务单元名称
+			for _, line := range strings.Split(content, "\n") {
+				if strings.Contains(line, ".service") {
+					// 格式类似：0::/system.slice/frpc.service
+					parts := strings.Split(line, "/")
+					for _, part := range parts {
+						if strings.HasSuffix(part, ".service") {
+							return true, part
+						}
+					}
+					return true, ""
+				}
+			}
+			return true, ""
+		}
+	}
+
+	// 方法2：尝试用 systemctl status PID 检查（需要 systemctl 可用）
+	if _, err := exec.LookPath("systemctl"); err == nil {
+		cmd := exec.Command("systemctl", "status", strconv.Itoa(pid))
+		if output, err := cmd.CombinedOutput(); err == nil {
+			content := string(output)
+			// 查找类似 "● frpc.service" 的行
+			for _, line := range strings.Split(content, "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "●") && strings.HasSuffix(line, ".service") {
+					parts := strings.Fields(line)
+					if len(parts) >= 2 {
+						return true, parts[1]
+					}
+				}
+			}
+		}
+	}
+
+	return false, ""
+}
+
+// checkAdminAPI 解析配置文件，检查是否配置了 admin API（webServer）
+func checkAdminAPI(configPath string) (bool, string) {
+	if configPath == "" {
+		return false, ""
+	}
+
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		return false, ""
+	}
+
+	text := string(content)
+
+	// 检查 TOML 格式的 webServer 配置
+	if strings.Contains(text, "[webServer]") || strings.Contains(text, "webServer.") {
+		// 尝试提取地址和端口
+		var addr, port string
+		for _, line := range strings.Split(text, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "webServer.addr") || strings.HasPrefix(line, "addr") {
+				parts := strings.SplitN(line, "=", 2)
+				if len(parts) == 2 {
+					addr = strings.Trim(strings.TrimSpace(parts[1]), `"'`)
+				}
+			}
+			if strings.HasPrefix(line, "webServer.port") || strings.HasPrefix(line, "port") {
+				parts := strings.SplitN(line, "=", 2)
+				if len(parts) == 2 {
+					port = strings.Trim(strings.TrimSpace(parts[1]), `"'`)
+				}
+			}
+		}
+		if addr == "" {
+			addr = "127.0.0.1"
+		}
+		if port == "" {
+			port = "7400"
+		}
+		return true, addr + ":" + port
+	}
+
+	// 检查 INI 格式的 admin_addr 和 admin_port
+	if strings.Contains(text, "admin_addr") || strings.Contains(text, "admin_port") {
+		var addr, port string
+		for _, line := range strings.Split(text, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "admin_addr") {
+				parts := strings.SplitN(line, "=", 2)
+				if len(parts) == 2 {
+					addr = strings.TrimSpace(parts[1])
+				}
+			}
+			if strings.HasPrefix(line, "admin_port") {
+				parts := strings.SplitN(line, "=", 2)
+				if len(parts) == 2 {
+					port = strings.TrimSpace(parts[1])
+				}
+			}
+		}
+		if addr == "" {
+			addr = "127.0.0.1"
+		}
+		if port == "" {
+			port = "7400"
+		}
+		return true, addr + ":" + port
+	}
+
+	return false, ""
+}
+

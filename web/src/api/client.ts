@@ -139,6 +139,10 @@ export interface FrpcProcessCandidate {
   configPath: string
   managed: boolean
   serverId?: string
+  systemdManaged: boolean
+  systemdUnit?: string
+  hasAdminApi: boolean
+  adminApiAddress?: string
 }
 
 export interface FrpcDiscovery {

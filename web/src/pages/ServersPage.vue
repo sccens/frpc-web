@@ -139,11 +139,31 @@ async function registerBinary(path: string) {
 
 async function adoptProcess(proc: FrpcProcessCandidate) {
   if (adoptMode.value === 'restart') {
+    // 构建警告信息
+    let warningMsg = '将停止该进程并由面板用其配置重新拉起（隧道会短暂重连）。\n\n'
+
+    if (proc.systemdManaged) {
+      warningMsg += `⚠️ 检测到该进程由 systemd 托管${proc.systemdUnit ? `（${proc.systemdUnit}）` : ''}。\n`
+      warningMsg += `建议先手动停用服务：\n`
+      warningMsg += `sudo systemctl disable --now ${proc.systemdUnit || 'frpc'}\n\n`
+    }
+
+    if (!proc.hasAdminApi) {
+      warningMsg += '⚠️ 配置文件中未启用 admin API，面板将自动添加此配置以便管理。\n\n'
+    }
+
+    warningMsg += '确认继续？'
+
     try {
       await ElMessageBox.confirm(
-        '将停止该进程并由面板用其配置重新拉起（隧道会短暂重连）。若该进程由 systemd/supervisor 托管，请先停用其服务单元，否则会被重新拉起并冲突。',
+        warningMsg,
         '重启接管',
-        { type: 'warning', confirmButtonText: '接管', cancelButtonText: '取消' },
+        {
+          type: 'warning',
+          confirmButtonText: '继续接管',
+          cancelButtonText: '取消',
+          dangerouslyUseHTMLString: false,
+        },
       )
     } catch {
       return
@@ -542,6 +562,15 @@ function localTarget(rule: ProxyRule) {
               <strong>{{ proc.configPath || '未知配置路径' }}</strong>
               <div class="session-meta">
                 <code class="version-path" :title="proc.exe">{{ proc.exe || '二进制路径未知' }}</code>
+                <span v-if="proc.systemdManaged" class="status-chip warning-chip" :title="`由 systemd 托管${proc.systemdUnit ? `: ${proc.systemdUnit}` : ''}`">
+                  systemd
+                </span>
+                <span v-if="!proc.hasAdminApi" class="status-chip muted-chip" title="配置文件中未启用 admin API">
+                  无 Admin API
+                </span>
+                <span v-else-if="proc.adminApiAddress" class="status-chip success-chip" :title="`Admin API: ${proc.adminApiAddress}`">
+                  Admin API
+                </span>
               </div>
             </div>
             <span v-if="proc.managed" class="muted-inline">已纳管</span>
@@ -951,3 +980,48 @@ function localTarget(rule: ProxyRule) {
     </Teleport>
   </div>
 </template>
+
+<style scoped>
+.session-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.status-chip {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.warning-chip {
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+  border: 1px solid rgba(245, 158, 11, 0.24);
+}
+
+.success-chip {
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+  border: 1px solid rgba(16, 185, 129, 0.24);
+}
+
+.muted-chip {
+  background: rgba(161, 161, 170, 0.12);
+  color: var(--muted);
+  border: 1px solid rgba(161, 161, 170, 0.24);
+}
+
+html[data-theme="dark"] .warning-chip {
+  color: #fbbf24;
+}
+
+html[data-theme="dark"] .success-chip {
+  color: #34d399;
+}
+</style>
+
