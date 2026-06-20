@@ -778,8 +778,8 @@ function formatEndpoint(addr: string, port: number | string) {
                 </span>
                 <div class="flow-card-copy">
                   <p class="flow-label">{{ data.label }}</p>
-                  <h3>{{ data.title }}</h3>
-                  <span v-if="data.subtitle">{{ data.subtitle }}</span>
+                  <h3 :title="data.title">{{ data.title }}</h3>
+                  <span v-if="data.subtitle" :title="data.subtitle">{{ data.subtitle }}</span>
                 </div>
                 <span v-if="data.badge" class="status-chip compact">{{ data.badge }}</span>
               </div>
@@ -789,11 +789,10 @@ function formatEndpoint(addr: string, port: number | string) {
                 :key="live.text"
                 class="flow-live"
                 :class="`flow-live-${live.tone}`"
-                :title="live.err || live.text"
               >
                 <span class="flow-live-dot" />
                 <span class="flow-live-text">{{ live.text }}</span>
-                <span v-if="live.err" class="flow-live-err">{{ live.err }}</span>
+                <span v-if="live.err" class="flow-live-err" :title="live.err">{{ live.err }}</span>
               </div>
 
             </article>
@@ -1077,6 +1076,12 @@ function formatEndpoint(addr: string, port: number | string) {
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: help;
+  transition: opacity 0.15s ease;
+}
+
+.flow-card h3:hover {
+  opacity: 0.8;
 }
 
 /* 服务端入口显示完整地址：允许换行而不是截断 */
@@ -1108,6 +1113,12 @@ function formatEndpoint(addr: string, port: number | string) {
   line-height: 1.36;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: help;
+  transition: opacity 0.15s ease;
+}
+
+.flow-card-copy span:hover {
+  opacity: 0.8;
 }
 
 .status-chip {
@@ -1175,6 +1186,12 @@ function formatEndpoint(addr: string, port: number | string) {
   opacity: 0.82;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: help;
+  transition: opacity 0.15s ease;
+}
+
+.flow-live-err:hover {
+  opacity: 1;
 }
 
 .flow-live-ok {
