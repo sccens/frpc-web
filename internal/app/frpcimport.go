@@ -118,9 +118,50 @@ func (s *Service) AdoptProcess(ctx context.Context, input AdoptProcessInput) (Ad
 		return AdoptResult{}, invalidInput(fmt.Errorf("读取配置文件失败: %w", err))
 	}
 
-	server, err := s.createServerFromConfig(ctx, input.Name, content, true)
-	if err != nil {
-		return AdoptResult{}, err
+	// 解析配置以获取服务端信息，用于检查是否已存在相同的服务器
+	serverInput, _, parseErr := parseFrpcConfig(content)
+	if parseErr != nil {
+		return AdoptResult{}, invalidInput(fmt.Errorf("解析配置失败: %w", parseErr))
+	}
+
+	// 检查是否已存在相同 serverAddr:serverPort 的服务器
+	existingServers, _ := s.store.ListServers(ctx)
+	var existingServer *Server
+	for i := range existingServers {
+		if existingServers[i].ServerAddr == serverInput.ServerAddr &&
+			existingServers[i].ServerPort == serverInput.ServerPort {
+			existingServer = &existingServers[i]
+			break
+		}
+	}
+
+	var server Server
+	if existingServer != nil {
+		// 复用已存在的服务器
+		server = *existingServer
+		// 如果是手动提供了名称，更新服务器名称
+		if input.Name != "" {
+			updateInput := ServerInput{
+				Name:              input.Name,
+				ServerAddr:        server.ServerAddr,
+				ServerPort:        server.ServerPort,
+				AuthToken:         server.AuthToken,
+				TransportProtocol: server.TransportProtocol,
+				AutoStart:         server.AutoStart,
+				AutoRestart:       server.AutoRestart,
+				MaxRestarts:       server.MaxRestarts,
+				AdminPort:         server.AdminPort,
+				AdminUser:         server.AdminUser,
+				AdminPassword:     server.AdminPassword,
+			}
+			server, _ = s.store.UpdateServer(ctx, server.ID, updateInput)
+		}
+	} else {
+		// 创建新服务器
+		server, err = s.createServerFromConfig(ctx, input.Name, content, true)
+		if err != nil {
+			return AdoptResult{}, err
+		}
 	}
 
 	// 尽力把进程正在运行的二进制登记为激活版本（restart 模式重启时需要它）。
@@ -194,7 +235,11 @@ func (s *Service) AdoptProcess(ctx context.Context, input AdoptProcessInput) (Ad
 	adopted, _ := s.Server(ctx, server.ID)
 	message := startResult.Message
 	if startResult.OK {
-		message = "✅ 已纳管：原进程已停止，面板已用导入的配置重新启动 frpc。"
+		if existingServer != nil {
+			message = fmt.Sprintf("✅ 已纳管：复用了现有服务器配置「%s」，原进程已停止，面板已重新启动 frpc。", server.Name)
+		} else {
+			message = "✅ 已纳管：原进程已停止，面板已用导入的配置重新启动 frpc。"
+		}
 		if len(warnings) > 0 {
 			message += "\n\n" + strings.Join(warnings, "\n")
 		}
