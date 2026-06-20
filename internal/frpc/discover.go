@@ -46,6 +46,18 @@ func (r *Runtime) DiscoverBinaries() []app.FRPCBinaryCandidate {
 			Managed: managedRoot != "" && pathWithin(managedRoot, abs),
 		})
 	}
+
+	// 优先扫描 frpc-web 管理的 bin 目录
+	if managedRoot != "" {
+		if entries, err := os.ReadDir(managedRoot); err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() && strings.HasPrefix(entry.Name(), "frpc") {
+					add(filepath.Join(managedRoot, entry.Name()))
+				}
+			}
+		}
+	}
+
 	for _, dir := range candidateBinaryDirs() {
 		add(filepath.Join(dir, binaryName()))
 	}
