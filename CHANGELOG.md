@@ -1,5 +1,70 @@
 # Changelog
 
+## [v1.5.3] - 2026-06-21
+
+### Fixed
+- **接管去重**：修复接管（adopt）功能重复创建服务器记录的问题
+  - 接管同一 frpc 进程时，现在会检查是否已存在相同 `serverAddr:serverPort` 的服务器
+  - 如果找到匹配的服务器，复用该记录而非创建新的（避免重复的代理规则）
+  - 返回消息明确告知是"复用了现有服务器配置"还是"创建了新服务器"
+  - 不同 frps 服务端入口仍会创建独立的服务器记录
+  - 复用时不更新规则（保留用户自定义配置），如需更新规则请删除旧服务器后重新接管
+
+## [v1.5.2] - 2026-06-21
+
+### Added
+- **systemd 管理检测**：接管进程前自动检测是否由 systemd 托管
+  - 检查 `/proc/{pid}/cgroup` 和 `systemctl status` 提取服务单元名称
+  - 在确认对话框中显示明确警告，提供具体的 `systemctl disable` 命令
+  - 进程列表中显示 systemd 标签（黄色警告样式）
+- **Admin API 配置检测**：解析配置文件检查是否启用了 admin API
+  - 支持 TOML (`webServer`) 和 INI (`admin_addr/port`) 格式
+  - 进程列表中显示 Admin API 状态标签（绿色=已配置，灰色=未配置）
+  - 未配置时在警告中提示"面板将自动添加此配置"
+- **增强的警告机制**：restart 模式接管前显示详细风险提示
+  - systemd 托管警告：提示先停用服务避免冲突
+  - Admin API 缺失警告：说明面板会自动添加配置
+  - 操作完成后在成功消息中重申警告信息
+
+### Changed
+- **数据模型扩展**：`FRPCProcessCandidate` 新增字段
+  - `systemdManaged`: 是否由 systemd 托管
+  - `systemdUnit`: systemd 服务单元名称
+  - `hasAdminApi`: 是否配置了 admin API
+  - `adminApiAddress`: admin API 地址
+
+## [v1.5.1] - 2026-06-21
+
+### Fixed
+- **拓扑页面文本截断**：为所有被截断的文本添加悬浮提示功能
+  - 卡片标题（h3）：鼠标悬停显示完整内容
+  - 卡片副标题（span）：鼠标悬停显示完整内容
+  - 错误信息（.flow-live-err）：鼠标悬停显示完整错误
+  - 添加 `cursor: help` 和悬停透明度变化提供视觉反馈
+  - 使用原生 HTML `title` 属性，浏览器原生支持，无需额外依赖
+
+## [v1.5.0] - 2026-06-21
+
+### Added
+- **发现和接管已有 frpc**：支持导入和纳管系统中已存在的 frpc
+  - **二进制发现**：扫描 PATH 和常见安装目录，登记已安装的 frpc 无需重新下载
+  - **进程发现**：扫描运行中的 frpc 进程，提取 PID、二进制路径和配置文件路径
+  - **配置导入**：解析现有 frpc 配置文件（支持 TOML 和 INI 格式，v0.31~v0.70+）
+  - **进程接管**：两种纳管模式
+    - restart 模式：停止外部进程，由面板用导入的配置重新启动
+    - attach 模式：附着到运行中的进程，退出后由面板接管自动重启
+  - **前端 UI**：服务器页面顶部新增"接管已有 frpc"面板，扫描并显示发现的二进制和进程
+  - **API 路由**：
+    - `GET /api/frpc/discover` - 发现二进制和进程
+    - `POST /api/frpc/register` - 登记系统二进制
+    - `POST /api/servers/import-frpc` - 导入配置文件
+    - `POST /api/servers/adopt` - 接管运行中进程
+  - **安全机制**：
+    - 纳管前重新扫描进程，以 PID 匹配取真实路径（不信任客户端传入）
+    - restart 模式先 SIGTERM（5秒）再 SIGKILL，确保旧进程退出避免端口冲突
+    - 配置解析支持常见字段名变体（如 INI 的 `authentication_token` / `token`）
+  - **完整文档**：`ADOPT_EXISTING_FRPC.md` 详细说明使用方法和安全机制
+
 ## [v1.4.0]
 
 ### Security
