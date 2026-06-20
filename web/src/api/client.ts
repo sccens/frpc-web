@@ -85,6 +85,7 @@ export interface Server {
   adminPort: number
   adminUser?: string
   adminPassword?: string
+  managementMode?: string // "managed" | "attached"
   rules?: ProxyRule[]
   createdAt?: string
   updatedAt?: string

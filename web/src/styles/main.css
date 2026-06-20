@@ -743,6 +743,22 @@ html[data-theme="dark"] .theme-switch:not(.is-dark) .theme-switch-sun {
   white-space: nowrap;
 }
 
+.mode-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 12px;
+  white-space: nowrap;
+}
+
+.attached-chip {
+  background: rgba(250, 173, 20, 0.12);
+  color: #d87607;
+  border: 1px solid rgba(250, 173, 20, 0.3);
+}
+
 .server-meta-box {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

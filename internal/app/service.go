@@ -34,6 +34,7 @@ type Store interface {
 	UpdateServer(ctx context.Context, id string, input ServerInput) (Server, error)
 	DeleteServer(ctx context.Context, id string) error
 	SetServerStatus(ctx context.Context, id, status string) error
+	SetServerManagementMode(ctx context.Context, id, mode string) error
 	MarkReloaded(ctx context.Context, id string) error
 	ListRules(ctx context.Context, serverID string) ([]ProxyRule, error)
 	CreateRule(ctx context.Context, serverID string, input ProxyRuleInput) (ProxyRule, error)
@@ -606,6 +607,13 @@ func (s *Service) start(ctx context.Context, serverID string, resetAttemptsOnSuc
 	if err != nil {
 		return errorResult(err)
 	}
+	// 检查管理模式：attached 模式不允许启动
+	if server.ManagementMode == "attached" {
+		return ActionResult{
+			OK:      false,
+			Message: "此服务器为附着观察模式，面板无法控制其启停。如需控制，请先使用 restart 模式重新接管。",
+		}
+	}
 	if process, err := s.store.GetProcess(ctx, serverID); err == nil && s.runtime.ProcessAlive(ctx, process.PID) {
 		return ActionResult{OK: true, Message: "frpc already running", Output: fmt.Sprintf("pid=%d", process.PID)}
 	}
@@ -650,6 +658,13 @@ func (s *Service) stopInner(ctx context.Context, serverID string) ActionResult {
 	if err != nil {
 		return errorResult(err)
 	}
+	// 检查管理模式：attached 模式不允许停止
+	if server.ManagementMode == "attached" {
+		return ActionResult{
+			OK:      false,
+			Message: "此服务器为附着观察模式，面板无法控制其启停。如需控制，请先使用 restart 模式重新接管。",
+		}
+	}
 	process, err := s.store.GetProcess(ctx, serverID)
 	if err != nil {
 		_ = s.store.SetServerStatus(ctx, serverID, "stopped")
@@ -679,6 +694,13 @@ func (s *Service) Reload(ctx context.Context, serverID string) ActionResult {
 	server, err := s.store.GetServer(ctx, serverID)
 	if err != nil {
 		return errorResult(err)
+	}
+	// 检查管理模式：attached 模式不允许重载
+	if server.ManagementMode == "attached" {
+		return ActionResult{
+			OK:      false,
+			Message: "此服务器为附着观察模式，面板无法控制其重载。如需控制，请先使用 restart 模式重新接管。",
+		}
 	}
 	if server.RestartRequired {
 		return ActionResult{OK: false, Message: "公共配置已变更，需要重启后生效"}

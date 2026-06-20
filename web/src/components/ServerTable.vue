@@ -60,6 +60,9 @@ async function copyEndpoint(server: Server) {
           <div class="server-title-row">
             <StatusBadge :status="server.status" />
             <h3>{{ server.name }}</h3>
+            <span v-if="server.managementMode === 'attached'" class="mode-chip attached-chip" title="只读观察模式：面板无法控制此进程的启停">
+              👁️ 只读
+            </span>
           </div>
           <button v-if="!compact" class="icon-button ghost" type="button" aria-label="配置检查" @click="emit('check', server)">
             <Ellipsis :size="17" :stroke-width="1.8" />

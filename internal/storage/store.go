@@ -312,6 +312,7 @@ func (s *Store) CreateServer(_ context.Context, input app.ServerInput) (app.Serv
 		AdminPort:         input.AdminPort,
 		AdminUser:         input.AdminUser,
 		AdminPassword:     input.AdminPassword,
+		ManagementMode:    "managed", // 默认为完全托管
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
@@ -374,6 +375,18 @@ func (s *Store) SetServerStatus(_ context.Context, id, status string) error {
 		return err
 	}
 	server.Status = status
+	server.UpdatedAt = nowString()
+	return s.save()
+}
+
+func (s *Store) SetServerManagementMode(_ context.Context, id, mode string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	server, _, err := s.findServer(id)
+	if err != nil {
+		return err
+	}
+	server.ManagementMode = mode
 	server.UpdatedAt = nowString()
 	return s.save()
 }

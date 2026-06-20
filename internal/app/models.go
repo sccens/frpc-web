@@ -128,6 +128,10 @@ type Server struct {
 	AdminPort         int         `json:"adminPort"`
 	AdminUser         string      `json:"adminUser,omitempty"`
 	AdminPassword     string      `json:"adminPassword,omitempty"`
+	// ManagementMode 表示面板对此服务器进程的管理权限：
+	// - "managed": 完全托管，面板启动的进程，可以启动/停止/重启/重载
+	// - "attached": 附着观察，外部进程，只能查看日志和状态，不能控制
+	ManagementMode    string      `json:"managementMode"`
 	CreatedAt         string      `json:"createdAt"`
 	UpdatedAt         string      `json:"updatedAt"`
 	Rules             []ProxyRule `json:"rules,omitempty"`

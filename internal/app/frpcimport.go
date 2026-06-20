@@ -173,6 +173,9 @@ func (s *Service) AdoptProcess(ctx context.Context, input AdoptProcessInput) (Ad
 	}
 
 	if mode == "attach" {
+		// attach 模式：只附着观察，不控制进程
+		// 设置 managementMode 为 "attached"，禁止启停操作
+		_ = s.store.SetServerManagementMode(ctx, server.ID, "attached")
 		now := time.Now().Format(time.RFC3339)
 		_ = s.store.UpsertProcess(ctx, ProcessInfo{
 			ServerID:    server.ID,
@@ -183,12 +186,12 @@ func (s *Service) AdoptProcess(ctx context.Context, input AdoptProcessInput) (Ad
 		})
 		_ = s.store.SetServerStatus(ctx, server.ID, "running")
 		s.runtime.Adopt(server.ID, input.PID)
-		_ = s.store.AddHealth(ctx, server.ID, "info", "已附着到运行中的 frpc 进程（未重启）；原始 stdout 日志在面板内不可见。")
+		_ = s.store.AddHealth(ctx, server.ID, "info", "已附着到运行中的 frpc 进程（只读观察模式）。面板无法控制此进程的启停，只能查看日志和状态。")
 		adopted, _ := s.Server(ctx, server.ID)
 		return AdoptResult{
 			Server:  adopted,
 			Started: true,
-			Message: "已附着到运行中的 frpc 进程（未重启）。进程退出后面板会按配置接管自动重启。",
+			Message: "✅ 已附着到运行中的 frpc 进程（只读观察模式）。\n\n⚠️ 面板无法控制此进程的启停操作，只能查看日志和状态。如需完全控制，请使用 restart 模式。",
 		}, nil
 	}
 
@@ -231,6 +234,10 @@ func (s *Service) AdoptProcess(ctx context.Context, input AdoptProcessInput) (Ad
 			Message: "已导入配置，但停止原进程失败：" + stopResult.Message,
 		}, nil
 	}
+
+	// restart 模式：设置为完全托管
+	_ = s.store.SetServerManagementMode(ctx, server.ID, "managed")
+
 	startResult := s.Start(ctx, server.ID)
 	adopted, _ := s.Server(ctx, server.ID)
 	message := startResult.Message
