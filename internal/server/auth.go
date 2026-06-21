@@ -159,6 +159,12 @@ func auditMetaFor(r *http.Request) (auditMeta, bool) {
 		return auditMeta{"config.edit", "config", part(parts, 2)}, true
 	case path == "/api/auth/access-key" && method == http.MethodPost:
 		return auditMeta{"auth.access_key", "settings", "access_key"}, true
+	case path == "/api/frps/targets" && method == http.MethodPost:
+		return auditMeta{"frps.create", "frps", ""}, true
+	case len(parts) == 4 && parts[1] == "frps" && parts[2] == "targets" && method == http.MethodPut:
+		return auditMeta{"frps.update", "frps", part(parts, 3)}, true
+	case len(parts) == 4 && parts[1] == "frps" && parts[2] == "targets" && method == http.MethodDelete:
+		return auditMeta{"frps.delete", "frps", part(parts, 3)}, true
 	case path == "/api/audit-logs" && method == http.MethodDelete:
 		return auditMeta{"audit.clear", "audit", ""}, true
 	case strings.HasSuffix(path, "/reload") && method == http.MethodPost:

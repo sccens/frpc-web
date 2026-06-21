@@ -14,6 +14,42 @@ type SettingsInput struct {
 	GithubProxy string `json:"githubProxy"`
 }
 
+type FrpsTarget struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	URL             string `json:"url"`
+	Username        string `json:"username,omitempty"`
+	Password        string `json:"password,omitempty"`
+	Enabled         bool   `json:"enabled"`
+	IntervalSeconds int    `json:"intervalSeconds"`
+	CreatedAt       string `json:"createdAt"`
+	UpdatedAt       string `json:"updatedAt"`
+}
+
+type FrpsTargetInput struct {
+	Name            string `json:"name"`
+	URL             string `json:"url"`
+	Username        string `json:"username"`
+	Password        string `json:"password"`
+	Enabled         bool   `json:"enabled"`
+	IntervalSeconds int    `json:"intervalSeconds"`
+}
+
+type FrpsTargetView struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	URL             string `json:"url"`
+	Username        string `json:"username,omitempty"`
+	HasPassword     bool   `json:"hasPassword"`
+	Enabled         bool   `json:"enabled"`
+	IntervalSeconds int    `json:"intervalSeconds"`
+	Status          string `json:"status"`
+	LastError       string `json:"lastError,omitempty"`
+	LastScrapedAt   string `json:"lastScrapedAt,omitempty"`
+	CreatedAt       string `json:"createdAt"`
+	UpdatedAt       string `json:"updatedAt"`
+}
+
 type AuthInput struct {
 	AccessKey string `json:"accessKey"`
 }
@@ -85,24 +121,24 @@ type AuditLogPage struct {
 // Server 是一台 frpc 实例的只读视图，由扫描某个 frpc 配置文件得到。
 // 一文件 = 一 server；ID 是配置文件绝对路径的稳定哈希（见 configscan.go）。
 type Server struct {
-	ID                string      `json:"id"`
-	Name              string      `json:"name"`
-	ConfigPath        string      `json:"configPath"`
-	ServerAddr        string      `json:"serverAddr"`
-	ServerPort        int         `json:"serverPort"`
-	AuthToken         string      `json:"authToken,omitempty"`
-	TransportProtocol string      `json:"transportProtocol"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	ConfigPath        string `json:"configPath"`
+	ServerAddr        string `json:"serverAddr"`
+	ServerPort        int    `json:"serverPort"`
+	AuthToken         string `json:"authToken,omitempty"`
+	TransportProtocol string `json:"transportProtocol"`
 	// Status 取值：running（admin API 可达）/ stopped（不可达）/ no-admin（配置无 webServer）/ error（解析失败）。
-	Status        string      `json:"status"`
-	AdminAddr     string      `json:"adminAddr"`
-	AdminPort     int         `json:"adminPort"`
-	AdminUser     string      `json:"adminUser,omitempty"`
-	AdminPassword string      `json:"adminPassword,omitempty"`
+	Status        string `json:"status"`
+	AdminAddr     string `json:"adminAddr"`
+	AdminPort     int    `json:"adminPort"`
+	AdminUser     string `json:"adminUser,omitempty"`
+	AdminPassword string `json:"adminPassword,omitempty"`
 	// LogPath 解析自配置的 log.to；为空表示该实例未配置文件日志。
-	LogPath   string      `json:"logPath,omitempty"`
-	Writable  bool        `json:"writable"`
-	ProxyCount int        `json:"proxyCount"`
-	Rules     []ProxyRule `json:"rules,omitempty"`
+	LogPath    string      `json:"logPath,omitempty"`
+	Writable   bool        `json:"writable"`
+	ProxyCount int         `json:"proxyCount"`
+	Rules      []ProxyRule `json:"rules,omitempty"`
 }
 
 // ProxyRule 是一条代理规则的只读视图，由解析配置文件的 [[proxies]]/[[visitors]] 得到。
@@ -142,10 +178,10 @@ type HealthEvent struct {
 
 // ConfigFile 是磁盘上一个 frpc 配置文件的路径与原文。
 type ConfigFile struct {
-	Path      string `json:"path"`
-	Content   string `json:"content"`
-	Writable  bool   `json:"writable"`
-	IsToml    bool   `json:"isToml"`
+	Path     string `json:"path"`
+	Content  string `json:"content"`
+	Writable bool   `json:"writable"`
+	IsToml   bool   `json:"isToml"`
 }
 
 // ConfigBundle 是导出/导入的备份包：一组配置文件的路径与原文。
@@ -177,6 +213,54 @@ type ServerProxyStatus struct {
 	Running  bool          `json:"running"`
 	Error    string        `json:"error,omitempty"`
 	Proxies  []ProxyStatus `json:"proxies"`
+}
+
+type FrpsTrafficPoint struct {
+	Time           string  `json:"time"`
+	TrafficInRate  float64 `json:"trafficInRate"`
+	TrafficOutRate float64 `json:"trafficOutRate"`
+}
+
+type FrpsProxyMetric struct {
+	Name            string  `json:"name"`
+	Type            string  `json:"type"`
+	ConnectionCount int     `json:"connectionCount"`
+	TrafficIn       int64   `json:"trafficIn"`
+	TrafficOut      int64   `json:"trafficOut"`
+	TrafficInRate   float64 `json:"trafficInRate"`
+	TrafficOutRate  float64 `json:"trafficOutRate"`
+}
+
+type FrpsTargetMetrics struct {
+	Target          FrpsTargetView     `json:"target"`
+	ClientCount     int                `json:"clientCount"`
+	ProxyCount      int                `json:"proxyCount"`
+	ConnectionCount int                `json:"connectionCount"`
+	TrafficIn       int64              `json:"trafficIn"`
+	TrafficOut      int64              `json:"trafficOut"`
+	TrafficInRate   float64            `json:"trafficInRate"`
+	TrafficOutRate  float64            `json:"trafficOutRate"`
+	Proxies         []FrpsProxyMetric  `json:"proxies"`
+	History         []FrpsTrafficPoint `json:"history"`
+}
+
+type FrpsTotals struct {
+	TargetCount     int     `json:"targetCount"`
+	OnlineCount     int     `json:"onlineCount"`
+	OfflineCount    int     `json:"offlineCount"`
+	DisabledCount   int     `json:"disabledCount"`
+	ClientCount     int     `json:"clientCount"`
+	ProxyCount      int     `json:"proxyCount"`
+	ConnectionCount int     `json:"connectionCount"`
+	TrafficIn       int64   `json:"trafficIn"`
+	TrafficOut      int64   `json:"trafficOut"`
+	TrafficInRate   float64 `json:"trafficInRate"`
+	TrafficOutRate  float64 `json:"trafficOutRate"`
+}
+
+type FrpsMetricsOverview struct {
+	Targets []FrpsTargetMetrics `json:"targets"`
+	Totals  FrpsTotals          `json:"totals"`
 }
 
 type LogLine struct {

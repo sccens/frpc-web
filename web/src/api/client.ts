@@ -96,6 +96,78 @@ export interface ServerProxyStatus {
   proxies: ProxyStatus[]
 }
 
+export interface FrpsTargetInput {
+  name: string
+  url: string
+  username: string
+  password: string
+  enabled: boolean
+  intervalSeconds: number
+}
+
+export interface FrpsTargetView {
+  id: string
+  name: string
+  url: string
+  username?: string
+  hasPassword: boolean
+  enabled: boolean
+  intervalSeconds: number
+  status: 'pending' | 'online' | 'offline' | 'disabled'
+  lastError?: string
+  lastScrapedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface FrpsTrafficPoint {
+  time: string
+  trafficInRate: number
+  trafficOutRate: number
+}
+
+export interface FrpsProxyMetric {
+  name: string
+  type: string
+  connectionCount: number
+  trafficIn: number
+  trafficOut: number
+  trafficInRate: number
+  trafficOutRate: number
+}
+
+export interface FrpsTargetMetrics {
+  target: FrpsTargetView
+  clientCount: number
+  proxyCount: number
+  connectionCount: number
+  trafficIn: number
+  trafficOut: number
+  trafficInRate: number
+  trafficOutRate: number
+  proxies: FrpsProxyMetric[]
+  history: FrpsTrafficPoint[]
+}
+
+export interface FrpsTotals {
+  targetCount: number
+  onlineCount: number
+  offlineCount: number
+  disabledCount: number
+  clientCount: number
+  proxyCount: number
+  connectionCount: number
+  trafficIn: number
+  trafficOut: number
+  trafficInRate: number
+  trafficOutRate: number
+}
+
+export interface FrpsMetricsOverview {
+  targets: FrpsTargetMetrics[]
+  totals: FrpsTotals
+}
+
 export interface AuthStatus {
   authenticated: boolean
   mustChangePassword: boolean
@@ -241,6 +313,38 @@ export async function saveConfigFile(id: string, content: string) {
 
 export async function getProxiesStatus() {
   const { data } = await http.get<ServerProxyStatus[]>('/proxies/status')
+  return data
+}
+
+// ——— frps 流量监控 ———
+
+export async function getFrpsTargets() {
+  const { data } = await http.get<FrpsTargetView[]>('/frps/targets')
+  return data
+}
+
+export async function createFrpsTarget(input: FrpsTargetInput) {
+  const { data } = await http.post<FrpsTargetView>('/frps/targets', input)
+  return data
+}
+
+export async function updateFrpsTarget(id: string, input: FrpsTargetInput) {
+  const { data } = await http.put<FrpsTargetView>(`/frps/targets/${id}`, input)
+  return data
+}
+
+export async function deleteFrpsTarget(id: string) {
+  const { data } = await http.delete<{ ok: boolean }>(`/frps/targets/${id}`)
+  return data
+}
+
+export async function getFrpsMetrics() {
+  const { data } = await http.get<FrpsMetricsOverview>('/frps/metrics')
+  return data
+}
+
+export async function getFrpsTargetMetrics(id: string) {
+  const { data } = await http.get<FrpsTargetMetrics>(`/frps/metrics/${id}`)
   return data
 }
 

@@ -3,12 +3,12 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   Activity,
+  Gauge,
   LogOut,
   Network,
   Server,
   Settings,
 } from 'lucide-vue-next'
-// v2.0：导航仅保留 拓扑 / 服务器 / 设置；品牌与登录后默认页均指向 /topology。
 import { changeAccessKey, getAuthStatus, logout } from '../api/client'
 import FloatingLogButton from '../components/FloatingLogButton.vue'
 import ThemeToggle from '../components/ThemeToggle.vue'
@@ -17,6 +17,7 @@ import { errorMessage } from '../utils/errors'
 const navItems = [
   { to: '/topology', label: '拓扑', icon: Network },
   { to: '/servers', label: '服务器', icon: Server },
+  { to: '/traffic', label: '流量', icon: Gauge },
   { to: '/settings', label: '设置', icon: Settings },
 ]
 

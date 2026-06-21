@@ -1374,6 +1374,10 @@ html[data-theme="dark"] .theme-switch:not(.is-dark) .theme-switch-sun {
   display: none;
 }
 
+.settings-control .hidden-input {
+  display: none;
+}
+
 .version-input {
   flex: 0 0 180px;
   min-width: 160px;
@@ -1627,6 +1631,10 @@ html[data-theme="dark"] .theme-switch:not(.is-dark) .theme-switch-sun {
   gap: 14px;
   padding: 18px 24px 24px;
   border-left: 1px solid var(--line-soft);
+}
+
+.settings-form:first-child {
+  border-left: 0;
 }
 
 .settings-control {

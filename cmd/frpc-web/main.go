@@ -63,6 +63,7 @@ func main() {
 	})
 	// v2.0：后台扫描磁盘上的 frpc 配置文件并探测各实例 admin API 实时状态。
 	go svc.StartScanner(ctx)
+	go svc.StartFrpsMonitor(ctx)
 
 	handler := server.New(server.Options{
 		Service:           svc,
@@ -85,7 +86,7 @@ func main() {
 		logger.Warn("trusted proxy headers enabled; X-Forwarded-For and X-Real-IP will be used for audit and rate limiting")
 	}
 
-	httpServer := &http.Server{Addr: addr, Handler: handler}
+	httpServer := newHTTPServer(addr, handler)
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -106,6 +107,17 @@ func getenv(key string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       60 * time.Second,
+	}
 }
 
 func isPublicBind(addr string) bool {

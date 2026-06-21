@@ -182,7 +182,7 @@ const updateState = computed(() => {
     return {
       eyebrow: 'Update Available',
       title: `发现新版本 ${info.latest}`,
-      description: '更新会下载新版本并校验 SHA256，随后原地重启服务。',
+      description: '更新会校验发布签名与 SHA256，随后原地重启服务。',
       tone: 'available',
     }
   }
@@ -265,7 +265,7 @@ function awaitRestartThenReload() {
         <div>
           <p class="overline">Security</p>
           <h2>安全</h2>
-          <span>访问密钥管理</span>
+          <span>访问密钥管理与配置备份</span>
         </div>
       </div>
 
@@ -287,30 +287,26 @@ function awaitRestartThenReload() {
             </button>
           </label>
         </div>
-      </div>
-    </section>
 
-    <section class="surface-panel settings-panel">
-      <div class="section-heading settings-heading">
-        <div>
-          <p class="overline">Config Backup</p>
-          <h2>配置备份</h2>
-          <span>导出所有扫描到的配置文件原文；导入时写回各自路径</span>
-        </div>
-      </div>
-
-      <div class="settings-console">
         <div class="settings-form">
-          <button class="primary-action wide" type="button" :disabled="exporting" @click="exportBackup">
-            <Download :size="15" :stroke-width="1.8" />
-            导出配置
-          </button>
+          <div class="settings-control">
+            <span class="settings-control-icon"><Download :size="16" :stroke-width="1.7" /></span>
+            <span>
+              <p class="overline">Config Backup</p>
+              <strong>配置备份</strong>
+              <small>导出所有扫描到的配置文件原文；导入时写回各自路径</small>
+            </span>
+            <button class="primary-action wide" type="button" :disabled="exporting" @click="exportBackup">
+              <Download :size="15" :stroke-width="1.8" />
+              导出配置
+            </button>
 
-          <button class="ghost-action strong wide" type="button" :disabled="importing" @click="importFileInput?.click()">
-            <Upload :size="15" :stroke-width="1.8" />
-            {{ importing ? '导入中…' : '导入配置' }}
-          </button>
-          <input ref="importFileInput" class="hidden-input" type="file" accept=".json" @change="pickImportFile" />
+            <button class="ghost-action strong wide" type="button" :disabled="importing" @click="importFileInput?.click()">
+              <Upload :size="15" :stroke-width="1.8" />
+              {{ importing ? '导入中…' : '导入配置' }}
+            </button>
+            <input ref="importFileInput" class="hidden-input" type="file" accept=".json" @change="pickImportFile" />
+          </div>
         </div>
       </div>
     </section>

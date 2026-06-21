@@ -27,8 +27,8 @@ const updateRepo = "sccens/frpc-web"
 const maxUpdateBinarySize int64 = 64 << 20
 
 // releaseSigningPublicKey 是校验发布产物完整性的 ed25519 公钥（base64）。
-// 留空 = 未启用签名校验（仅 SHA256），便于在配置签名密钥前正常发布；
-// 一旦填入公钥，自更新会强制校验 SHA256SUMS 的签名，失败即拒绝更新。
+// 留空 = 禁用一键自更新；一旦填入公钥，自更新会强制校验 SHA256SUMS
+// 的签名，失败即拒绝更新。
 // 用 `go run ./cmd/release-sign keygen` 生成密钥对；也可在构建时用
 // -ldflags "-X github.com/sccens/frpc-web/internal/app.releaseSigningPublicKey=<base64>" 注入。
 var releaseSigningPublicKey = ""
@@ -55,6 +55,10 @@ func (s *Service) CheckUpdate(ctx context.Context) (UpdateCheck, error) {
 		Latest:    latest,
 		HasUpdate: versionLess(s.version, latest),
 		NotesURL:  fmt.Sprintf("https://github.com/%s/releases/tag/%s", updateRepo, latest),
+	}
+	if err := validateReleaseSigningPublicKey(releaseSigningPublicKey); err != nil {
+		result.ApplyHint = err.Error()
+		return result, nil
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -83,6 +87,9 @@ func (s *Service) ApplyUpdate(ctx context.Context) (ActionResult, error) {
 	if !check.CanApply {
 		return ActionResult{OK: false, Message: check.ApplyHint}, nil
 	}
+	if err := validateReleaseSigningPublicKey(releaseSigningPublicKey); err != nil {
+		return ActionResult{OK: false, Message: err.Error()}, nil
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return ActionResult{}, err
@@ -98,16 +105,14 @@ func (s *Service) ApplyUpdate(ctx context.Context) (ActionResult, error) {
 	if err != nil {
 		return ActionResult{}, fmt.Errorf("下载校验文件失败: %w", err)
 	}
-	// 已配置签名公钥时，先校验 SHA256SUMS 的 ed25519 签名，确保校验和本身可信，
+	// 先校验 SHA256SUMS 的 ed25519 签名，确保校验和本身可信，
 	// 再用它校验二进制——否则恶意代理可同时替换二进制和校验和。
-	if strings.TrimSpace(releaseSigningPublicKey) != "" {
-		sigB64, err := s.fetchUpdateAsset(ctx, base+"/SHA256SUMS.sig", 1<<20)
-		if err != nil {
-			return ActionResult{}, fmt.Errorf("下载签名文件失败: %w", err)
-		}
-		if err := verifyChecksumSignature(releaseSigningPublicKey, sums, sigB64); err != nil {
-			return ActionResult{}, err
-		}
+	sigB64, err := s.fetchUpdateAsset(ctx, base+"/SHA256SUMS.sig", 1<<20)
+	if err != nil {
+		return ActionResult{}, fmt.Errorf("下载签名文件失败: %w", err)
+	}
+	if err := verifyChecksumSignature(releaseSigningPublicKey, sums, sigB64); err != nil {
+		return ActionResult{}, err
 	}
 	expected := checksumFromSums(string(sums), asset)
 	if expected == "" {
@@ -217,16 +222,23 @@ func checksumFromSums(sums string, filename string) string {
 	return ""
 }
 
-// verifyChecksumSignature 校验 SHA256SUMS 的 ed25519 分离签名。
-// pubB64 为空表示未启用签名校验，直接放行（仅依赖 SHA256）。
-func verifyChecksumSignature(pubB64 string, sums []byte, sigB64 []byte) error {
+func validateReleaseSigningPublicKey(pubB64 string) error {
 	if strings.TrimSpace(pubB64) == "" {
-		return nil
+		return errors.New("一键更新未启用：构建中缺少发布签名公钥，请使用安装脚本手动升级")
 	}
 	pub, err := base64.StdEncoding.DecodeString(strings.TrimSpace(pubB64))
 	if err != nil || len(pub) != ed25519.PublicKeySize {
 		return errors.New("发布签名公钥配置无效")
 	}
+	return nil
+}
+
+// verifyChecksumSignature 校验 SHA256SUMS 的 ed25519 分离签名。
+func verifyChecksumSignature(pubB64 string, sums []byte, sigB64 []byte) error {
+	if err := validateReleaseSigningPublicKey(pubB64); err != nil {
+		return err
+	}
+	pub, _ := base64.StdEncoding.DecodeString(strings.TrimSpace(pubB64))
 	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(sigB64)))
 	if err != nil {
 		return errors.New("签名文件格式无效")

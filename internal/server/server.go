@@ -52,6 +52,12 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("GET /api/config-files/{id}", api.readConfigFile)
 	mux.HandleFunc("PUT /api/config-files/{id}", api.saveConfigFile)
 	mux.HandleFunc("GET /api/proxies/status", api.proxiesStatus)
+	mux.HandleFunc("GET /api/frps/targets", api.listFrpsTargets)
+	mux.HandleFunc("POST /api/frps/targets", api.createFrpsTarget)
+	mux.HandleFunc("PUT /api/frps/targets/{id}", api.updateFrpsTarget)
+	mux.HandleFunc("DELETE /api/frps/targets/{id}", api.deleteFrpsTarget)
+	mux.HandleFunc("GET /api/frps/metrics", api.frpsMetrics)
+	mux.HandleFunc("GET /api/frps/metrics/{id}", api.frpsTargetMetrics)
 	mux.HandleFunc("GET /api/servers", api.listServers)
 	mux.HandleFunc("GET /api/servers/{id}", api.getServer)
 	mux.HandleFunc("POST /api/servers/{id}/reload", api.reloadServer)
@@ -216,6 +222,44 @@ func (h apiHandler) saveConfigFile(w http.ResponseWriter, r *http.Request) {
 
 func (h apiHandler) proxiesStatus(w http.ResponseWriter, r *http.Request) {
 	payload, err := h.service.ProxiesStatus(r.Context())
+	writeResult(w, payload, err)
+}
+
+func (h apiHandler) listFrpsTargets(w http.ResponseWriter, r *http.Request) {
+	payload, err := h.service.FrpsTargets(r.Context())
+	writeResult(w, payload, err)
+}
+
+func (h apiHandler) createFrpsTarget(w http.ResponseWriter, r *http.Request) {
+	var input app.FrpsTargetInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	payload, err := h.service.CreateFrpsTarget(r.Context(), input)
+	writeResultStatus(w, http.StatusCreated, payload, err)
+}
+
+func (h apiHandler) updateFrpsTarget(w http.ResponseWriter, r *http.Request) {
+	var input app.FrpsTargetInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	payload, err := h.service.UpdateFrpsTarget(r.Context(), r.PathValue("id"), input)
+	writeResult(w, payload, err)
+}
+
+func (h apiHandler) deleteFrpsTarget(w http.ResponseWriter, r *http.Request) {
+	err := h.service.DeleteFrpsTarget(r.Context(), r.PathValue("id"))
+	writeResult(w, map[string]bool{"ok": true}, err)
+}
+
+func (h apiHandler) frpsMetrics(w http.ResponseWriter, r *http.Request) {
+	payload, err := h.service.FrpsMetrics(r.Context())
+	writeResult(w, payload, err)
+}
+
+func (h apiHandler) frpsTargetMetrics(w http.ResponseWriter, r *http.Request) {
+	payload, err := h.service.FrpsTargetMetrics(r.Context(), r.PathValue("id"))
 	writeResult(w, payload, err)
 }
 

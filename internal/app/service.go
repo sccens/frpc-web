@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,6 +69,7 @@ type Service struct {
 	store   Store
 	runtime Runtime
 	scanner *ConfigScanner
+	frps    *FrpsMonitor
 	addr    string
 	version string
 }
@@ -77,18 +80,25 @@ func NewService(opts Options) *Service {
 		version = "dev"
 	}
 	scanner := NewConfigScanner(opts.Store.DataDir(), opts.Runtime)
-	return &Service{
+	svc := &Service{
 		store:   opts.Store,
 		runtime: opts.Runtime,
 		scanner: scanner,
 		addr:    opts.Addr,
 		version: version,
 	}
+	svc.frps = NewFrpsMonitor(svc.loadFrpsTargets)
+	return svc
 }
 
 // StartScanner 启动后台配置扫描与状态探测循环，阻塞至 ctx 取消。
 func (s *Service) StartScanner(ctx context.Context) {
 	s.scanner.Run(ctx)
+}
+
+// StartFrpsMonitor 启动 frps Prometheus 指标轮询，阻塞至 ctx 取消。
+func (s *Service) StartFrpsMonitor(ctx context.Context) {
+	s.frps.Run(ctx)
 }
 
 // RefreshScan 触发一次配置扫描与状态探测（供测试与「保存后立即刷新」使用）。
@@ -323,6 +333,186 @@ func (s *Service) UpdateSettings(ctx context.Context, input SettingsInput) (Sett
 		return Settings{}, err
 	}
 	return s.Settings(ctx)
+}
+
+// ——— frps 流量监控目标 ———
+
+const frpsTargetsSettingKey = "frps_targets"
+
+func (s *Service) FrpsTargets(ctx context.Context) ([]FrpsTargetView, error) {
+	targets, err := s.loadFrpsTargets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.frps.TargetViews(targets), nil
+}
+
+func (s *Service) CreateFrpsTarget(ctx context.Context, input FrpsTargetInput) (FrpsTargetView, error) {
+	target, err := normalizeFrpsTargetInput(input, FrpsTarget{})
+	if err != nil {
+		return FrpsTargetView{}, invalidInput(err)
+	}
+	target.ID = randomTargetID()
+	now := time.Now().Format(time.RFC3339)
+	target.CreatedAt = now
+	target.UpdatedAt = now
+	targets, err := s.loadFrpsTargets(ctx)
+	if err != nil {
+		return FrpsTargetView{}, err
+	}
+	targets = append(targets, target)
+	if err := s.saveFrpsTargets(ctx, targets); err != nil {
+		return FrpsTargetView{}, err
+	}
+	s.frps.RefreshNow(ctx)
+	return s.frps.TargetView(target), nil
+}
+
+func (s *Service) UpdateFrpsTarget(ctx context.Context, id string, input FrpsTargetInput) (FrpsTargetView, error) {
+	targets, err := s.loadFrpsTargets(ctx)
+	if err != nil {
+		return FrpsTargetView{}, err
+	}
+	for i := range targets {
+		if targets[i].ID != id {
+			continue
+		}
+		next, err := normalizeFrpsTargetInput(input, targets[i])
+		if err != nil {
+			return FrpsTargetView{}, invalidInput(err)
+		}
+		next.ID = targets[i].ID
+		next.CreatedAt = targets[i].CreatedAt
+		next.UpdatedAt = time.Now().Format(time.RFC3339)
+		targets[i] = next
+		if err := s.saveFrpsTargets(ctx, targets); err != nil {
+			return FrpsTargetView{}, err
+		}
+		s.frps.RefreshNow(ctx)
+		return s.frps.TargetView(next), nil
+	}
+	return FrpsTargetView{}, ErrNotFound
+}
+
+func (s *Service) DeleteFrpsTarget(ctx context.Context, id string) error {
+	targets, err := s.loadFrpsTargets(ctx)
+	if err != nil {
+		return err
+	}
+	kept := targets[:0]
+	found := false
+	for _, target := range targets {
+		if target.ID == id {
+			found = true
+			continue
+		}
+		kept = append(kept, target)
+	}
+	if !found {
+		return ErrNotFound
+	}
+	if err := s.saveFrpsTargets(ctx, kept); err != nil {
+		return err
+	}
+	s.frps.RemoveTarget(id)
+	return nil
+}
+
+func (s *Service) FrpsMetrics(ctx context.Context) (FrpsMetricsOverview, error) {
+	targets, err := s.loadFrpsTargets(ctx)
+	if err != nil {
+		return FrpsMetricsOverview{}, err
+	}
+	return s.frps.Overview(targets), nil
+}
+
+func (s *Service) FrpsTargetMetrics(ctx context.Context, id string) (FrpsTargetMetrics, error) {
+	targets, err := s.loadFrpsTargets(ctx)
+	if err != nil {
+		return FrpsTargetMetrics{}, err
+	}
+	for _, target := range targets {
+		if target.ID == id {
+			return s.frps.TargetMetrics(target), nil
+		}
+	}
+	return FrpsTargetMetrics{}, ErrNotFound
+}
+
+func (s *Service) loadFrpsTargets(ctx context.Context) ([]FrpsTarget, error) {
+	raw, err := s.store.GetSetting(ctx, frpsTargetsSettingKey)
+	if errors.Is(err, ErrNotFound) || strings.TrimSpace(raw) == "" {
+		return []FrpsTarget{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var targets []FrpsTarget
+	if err := json.Unmarshal([]byte(raw), &targets); err != nil {
+		return nil, fmt.Errorf("parse frps targets failed: %w", err)
+	}
+	for i := range targets {
+		if targets[i].IntervalSeconds <= 0 {
+			targets[i].IntervalSeconds = defaultFrpsIntervalSeconds
+		}
+	}
+	return targets, nil
+}
+
+func (s *Service) saveFrpsTargets(ctx context.Context, targets []FrpsTarget) error {
+	data, err := json.Marshal(targets)
+	if err != nil {
+		return err
+	}
+	return s.store.SetSetting(ctx, frpsTargetsSettingKey, string(data))
+}
+
+func normalizeFrpsTargetInput(input FrpsTargetInput, previous FrpsTarget) (FrpsTarget, error) {
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		return FrpsTarget{}, errors.New("frps name is required")
+	}
+	rawURL := strings.TrimRight(strings.TrimSpace(input.URL), "/")
+	if rawURL == "" {
+		return FrpsTarget{}, errors.New("frps url is required")
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return FrpsTarget{}, errors.New("frps url must be an absolute http(s) URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return FrpsTarget{}, errors.New("frps url only supports http or https")
+	}
+	interval := input.IntervalSeconds
+	if interval == 0 {
+		interval = previous.IntervalSeconds
+	}
+	if interval == 0 {
+		interval = defaultFrpsIntervalSeconds
+	}
+	if interval < minFrpsIntervalSeconds || interval > maxFrpsIntervalSeconds {
+		return FrpsTarget{}, fmt.Errorf("intervalSeconds must be between %d and %d", minFrpsIntervalSeconds, maxFrpsIntervalSeconds)
+	}
+	password := strings.TrimSpace(input.Password)
+	if previous.ID != "" && password == "" {
+		password = previous.Password
+	}
+	return FrpsTarget{
+		Name:            name,
+		URL:             rawURL,
+		Username:        strings.TrimSpace(input.Username),
+		Password:        password,
+		Enabled:         input.Enabled,
+		IntervalSeconds: interval,
+	}, nil
+}
+
+func randomTargetID() string {
+	id, err := randomHex(8)
+	if err != nil {
+		return fmt.Sprintf("frps-%d", time.Now().UnixNano())
+	}
+	return "frps-" + id
 }
 
 // ——— 配置监控（只读 server 列表来自 ConfigScanner） ———

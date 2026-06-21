@@ -6,6 +6,7 @@ const LoginPage = () => import('../pages/LoginPage.vue')
 const ServersPage = () => import('../pages/ServersPage.vue')
 const SettingsPage = () => import('../pages/SettingsPage.vue')
 const TopologyPage = () => import('../pages/TopologyPage.vue')
+const TrafficPage = () => import('../pages/TrafficPage.vue')
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -18,12 +19,12 @@ export const router = createRouter({
       children: [
         { path: 'topology', name: 'topology', component: TopologyPage },
         { path: 'servers', name: 'servers', component: ServersPage },
+        { path: 'traffic', name: 'traffic', component: TrafficPage },
         { path: 'settings', name: 'settings', component: SettingsPage },
         // 兼容旧版书签
         { path: 'dashboard', redirect: '/topology' },
         { path: 'logs', redirect: '/topology' },
         { path: 'stats', redirect: '/topology' },
-        { path: 'traffic', redirect: '/topology' },
         { path: 'audit', redirect: '/settings' },
         { path: 'versions', redirect: '/settings' },
       ],
