@@ -136,7 +136,7 @@ async function submitAccessKeyChange() {
       currentAccessKey: currentAccessKey.value.trim(),
       newAccessKey: newAccessKey.value.trim(),
     })
-    ElMessage.success('Access Key 已更新')
+    ElMessage.success('访问密钥已更新')
     await router.replace('/login')
   } catch (err) {
     ElMessage.error(errorMessage(err, '更新失败'))
@@ -152,7 +152,7 @@ const updating = ref(false)
 const updateState = computed(() => {
   if (updateChecking.value) {
     return {
-      eyebrow: 'Checking',
+      eyebrow: '检查中',
       title: '正在检查更新',
       description: '正在连接 GitHub Releases 获取最新发布版本。',
       tone: 'checking',
@@ -162,7 +162,7 @@ const updateState = computed(() => {
   const info = updateInfo.value
   if (!info) {
     return {
-      eyebrow: 'Status',
+      eyebrow: '状态',
       title: '等待检查',
       description: '点击检查更新获取 frpc-web 最新 Release。',
       tone: 'idle',
@@ -171,7 +171,7 @@ const updateState = computed(() => {
 
   if (info.hasUpdate && !info.canApply) {
     return {
-      eyebrow: 'Manual Update',
+      eyebrow: '手动更新',
       title: `发现新版本 ${info.latest}`,
       description: info.applyHint || '当前环境需要手动升级。',
       tone: 'warning',
@@ -180,7 +180,7 @@ const updateState = computed(() => {
 
   if (info.hasUpdate) {
     return {
-      eyebrow: 'Update Available',
+      eyebrow: '可更新',
       title: `发现新版本 ${info.latest}`,
       description: '更新会校验发布签名与 SHA256，随后原地重启服务。',
       tone: 'available',
@@ -188,7 +188,7 @@ const updateState = computed(() => {
   }
 
   return {
-    eyebrow: 'Up To Date',
+    eyebrow: '已最新',
     title: '已是最新版本',
     description: '当前版本不低于 GitHub 最新发布版本。',
     tone: 'current',
@@ -263,7 +263,7 @@ function awaitRestartThenReload() {
     <section class="surface-panel settings-panel">
       <div class="section-heading settings-heading">
         <div>
-          <p class="overline">Security</p>
+          <p class="overline">安全</p>
           <h2>安全</h2>
           <span>访问密钥管理与配置备份</span>
         </div>
@@ -274,7 +274,7 @@ function awaitRestartThenReload() {
           <label class="settings-control">
             <span class="settings-control-icon"><KeyRound :size="16" :stroke-width="1.7" /></span>
             <span>
-              <p class="overline">Access Key</p>
+              <p class="overline">访问密钥</p>
               <strong>修改访问密钥</strong>
               <small>修改后需重新登录</small>
             </span>
@@ -283,7 +283,7 @@ function awaitRestartThenReload() {
             <input v-model="confirmAccessKey" type="password" placeholder="确认新密钥" />
             <button class="primary-action wide" type="button" :disabled="!canChangeAccessKey || securitySaving" @click="submitAccessKeyChange">
               <Save :size="15" :stroke-width="1.8" />
-              更新 Access Key
+              更新访问密钥
             </button>
           </label>
         </div>
@@ -292,7 +292,7 @@ function awaitRestartThenReload() {
           <div class="settings-control">
             <span class="settings-control-icon"><Download :size="16" :stroke-width="1.7" /></span>
             <span>
-              <p class="overline">Config Backup</p>
+              <p class="overline">配置备份</p>
               <strong>配置备份</strong>
               <small>导出所有扫描到的配置文件原文；导入时写回各自路径</small>
             </span>
@@ -314,7 +314,7 @@ function awaitRestartThenReload() {
     <section class="surface-panel settings-panel">
       <div class="section-heading settings-heading">
         <div>
-          <p class="overline">System</p>
+          <p class="overline">系统</p>
           <h2>系统更新</h2>
           <span>frpc-web 自身的版本检查与一键更新；下载代理用于访问 GitHub</span>
         </div>
@@ -325,7 +325,7 @@ function awaitRestartThenReload() {
           <label class="settings-control">
             <span class="settings-control-icon"><Download :size="16" :stroke-width="1.7" /></span>
             <span>
-              <p class="overline">GitHub Proxy</p>
+              <p class="overline">下载代理</p>
               <strong>下载代理</strong>
               <small>检查/下载更新时使用；留空则直连或走 FRPC_WEB_GITHUB_PROXY 环境变量。</small>
             </span>

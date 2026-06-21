@@ -2,9 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,11 +25,14 @@ const (
 
 type FrpsMonitor struct {
 	loadTargets func(context.Context) ([]FrpsTarget, error)
+	saveHistory func(context.Context, map[string][]FrpsTrafficPoint) error
 	client      *http.Client
 
 	mu      sync.RWMutex
 	states  map[string]*frpsMonitorState
 	refresh chan struct{}
+
+	saveMu sync.Mutex
 }
 
 type frpsMonitorState struct {
@@ -57,6 +63,8 @@ type prometheusSample struct {
 	Value  float64
 }
 
+var errFrpsInvalidAuth = errors.New("frps metrics authentication failed")
+
 func NewFrpsMonitor(loadTargets func(context.Context) ([]FrpsTarget, error)) *FrpsMonitor {
 	return &FrpsMonitor{
 		loadTargets: loadTargets,
@@ -64,6 +72,10 @@ func NewFrpsMonitor(loadTargets func(context.Context) ([]FrpsTarget, error)) *Fr
 		states:      map[string]*frpsMonitorState{},
 		refresh:     make(chan struct{}, 1),
 	}
+}
+
+func (m *FrpsMonitor) SetHistorySaver(saveHistory func(context.Context, map[string][]FrpsTrafficPoint) error) {
+	m.saveHistory = saveHistory
 }
 
 func (m *FrpsMonitor) Run(ctx context.Context) {
@@ -93,6 +105,24 @@ func (m *FrpsMonitor) RemoveTarget(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.states, id)
+}
+
+func (m *FrpsMonitor) LoadHistory(history map[string][]FrpsTrafficPoint) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, points := range history {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		state := m.ensureStateLocked(id)
+		state.History = normalizeFrpsHistory(points)
+	}
+}
+
+func (m *FrpsMonitor) HistorySnapshot() map[string][]FrpsTrafficPoint {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.historySnapshotLocked()
 }
 
 func (m *FrpsMonitor) TargetViews(targets []FrpsTarget) []FrpsTargetView {
@@ -165,6 +195,37 @@ func (m *FrpsMonitor) TargetMetrics(target FrpsTarget) FrpsTargetMetrics {
 	}
 }
 
+func (m *FrpsMonitor) TestTarget(ctx context.Context, target FrpsTarget) (FrpsTargetTestResult, error) {
+	callCtx, cancel := context.WithTimeout(ctx, frpsScrapeTimeout)
+	defer cancel()
+	body, err := m.fetchMetrics(callCtx, target)
+	if err != nil {
+		return FrpsTargetTestResult{
+			OK:      false,
+			Status:  "error",
+			Message: frpsConnectionErrorMessage(err),
+		}, nil
+	}
+	sample, err := parseFrpsMetrics(body, time.Now())
+	if err != nil {
+		return FrpsTargetTestResult{
+			OK:      false,
+			Status:  "error",
+			Message: "未读取到 frps Prometheus 指标，请确认 enablePrometheus = true 且地址为 Dashboard 端口",
+		}, nil
+	}
+	return FrpsTargetTestResult{
+		OK:              true,
+		Status:          "ok",
+		Message:         "连接成功，已读取到 frps Prometheus 指标",
+		ClientCount:     sample.ClientCount,
+		ProxyCount:      sample.ProxyCount,
+		ConnectionCount: sample.ConnectionCount,
+		TrafficIn:       sample.TrafficIn,
+		TrafficOut:      sample.TrafficOut,
+	}, nil
+}
+
 func (m *FrpsMonitor) scrapeDue(ctx context.Context, force bool) {
 	if m.loadTargets == nil {
 		return
@@ -224,6 +285,7 @@ func (m *FrpsMonitor) scrapeOne(ctx context.Context, target FrpsTarget) {
 		return
 	}
 	m.storeSample(target.ID, sample)
+	m.persistHistory(ctx)
 }
 
 func (m *FrpsMonitor) fetchMetrics(ctx context.Context, target FrpsTarget) (string, error) {
@@ -253,7 +315,7 @@ func (m *FrpsMonitor) fetchMetrics(ctx context.Context, target FrpsTarget) (stri
 }
 
 func errorsInvalidFrpsAuth() error {
-	return fmt.Errorf("frps metrics authentication failed")
+	return errFrpsInvalidAuth
 }
 
 func (m *FrpsMonitor) markError(id string, err error) {
@@ -282,6 +344,44 @@ func (m *FrpsMonitor) storeSample(id string, sample frpsMetricSample) {
 	if len(state.History) > frpsHistoryLimit {
 		state.History = append([]FrpsTrafficPoint(nil), state.History[len(state.History)-frpsHistoryLimit:]...)
 	}
+}
+
+func (m *FrpsMonitor) persistHistory(ctx context.Context) {
+	if m.saveHistory == nil {
+		return
+	}
+	m.saveMu.Lock()
+	defer m.saveMu.Unlock()
+	history := m.HistorySnapshot()
+	_ = m.saveHistory(ctx, history)
+}
+
+func (m *FrpsMonitor) historySnapshotLocked() map[string][]FrpsTrafficPoint {
+	history := make(map[string][]FrpsTrafficPoint, len(m.states))
+	for id, state := range m.states {
+		points := normalizeFrpsHistory(state.History)
+		if len(points) > 0 {
+			history[id] = points
+		}
+	}
+	return history
+}
+
+func normalizeFrpsHistory(points []FrpsTrafficPoint) []FrpsTrafficPoint {
+	if len(points) == 0 {
+		return []FrpsTrafficPoint{}
+	}
+	if len(points) > frpsHistoryLimit {
+		points = points[len(points)-frpsHistoryLimit:]
+	}
+	out := make([]FrpsTrafficPoint, 0, len(points))
+	for _, point := range points {
+		if strings.TrimSpace(point.Time) == "" {
+			continue
+		}
+		out = append(out, point)
+	}
+	return out
 }
 
 func (m *FrpsMonitor) ensureStateLocked(id string) *frpsMonitorState {
@@ -352,11 +452,15 @@ func parseFrpsMetrics(text string, scrapedAt time.Time) (frpsMetricSample, error
 	proxies := map[string]*FrpsProxyMetric{}
 	var proxyCountByType, detailedProxyCount int
 	var totalConnectionsSet, totalTrafficInSet, totalTrafficOutSet bool
+	seenFrpsMetric := false
 
 	for _, line := range strings.Split(text, "\n") {
 		metric, ok := parsePrometheusLine(line)
 		if !ok {
 			continue
+		}
+		if strings.HasPrefix(metric.Name, "frp_server_") {
+			seenFrpsMetric = true
 		}
 		switch metric.Name {
 		case "frp_server_client_counts":
@@ -425,7 +529,35 @@ func parseFrpsMetrics(text string, scrapedAt time.Time) (frpsMetricSample, error
 	} else {
 		sample.ProxyCount = len(sample.Proxies)
 	}
+	if !seenFrpsMetric {
+		return frpsMetricSample{}, fmt.Errorf("no frps metrics found")
+	}
 	return sample, nil
+}
+
+func frpsConnectionErrorMessage(err error) string {
+	if errors.Is(err, errFrpsInvalidAuth) {
+		return "认证失败，请检查用户名和密码"
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		err = urlErr.Err
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "连接超时，请检查 Dashboard 地址、防火墙或安全组"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "连接超时，请检查 Dashboard 地址、防火墙或安全组"
+	}
+	message := err.Error()
+	if strings.Contains(message, "connection refused") || strings.Contains(message, "no such host") || strings.Contains(message, "network is unreachable") {
+		return "连接失败，请检查 Dashboard 地址、防火墙或安全组"
+	}
+	if strings.Contains(message, "frps metrics returned") {
+		return "指标接口返回异常：" + strings.TrimPrefix(message, "frps metrics returned ")
+	}
+	return "连接失败：" + message
 }
 
 func parsePrometheusLine(line string) (prometheusSample, bool) {

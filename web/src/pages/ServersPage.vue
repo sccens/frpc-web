@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Download, Search, X } from 'lucide-vue-next'
+import { Download, Info, Search, X } from 'lucide-vue-next'
 import {
   getServers,
   getServerLogs,
@@ -196,7 +196,7 @@ function localTarget(rule: ProxyRule) {
     <section class="surface-panel">
       <div class="section-heading">
         <div>
-          <p class="overline">Proxy Rules</p>
+          <p class="overline">代理规则</p>
           <h2>代理规则</h2>
           <span>只读展示配置文件中解析出的代理规则</span>
         </div>
@@ -244,7 +244,7 @@ function localTarget(rule: ProxyRule) {
         <aside class="rule-drawer config-drawer">
           <header class="drawer-header">
             <div>
-              <p class="overline">Config File</p>
+              <p class="overline">配置文件</p>
               <h2>编辑配置文件</h2>
               <span class="version-path" :title="configPath">{{ configPath }}</span>
             </div>
@@ -254,24 +254,20 @@ function localTarget(rule: ProxyRule) {
           </header>
 
           <div class="drawer-body">
-            <el-alert
-              v-if="!configWritable"
-              type="warning"
-              :closable="false"
-              title="该配置文件不可写"
-              description="保存按钮已禁用。可下载修改后的内容，或按部署开启可写权限。"
-              show-icon
-              style="margin-bottom: 12px"
-            />
-            <el-alert
-              v-else
-              type="info"
-              :closable="false"
-              title="保存只写盘，不会自动重载"
-              description="保存后点卡片上的「热重载」（需启用 admin API）或重启 frpc 服务。"
-              show-icon
-              style="margin-bottom: 12px"
-            />
+            <div v-if="!configWritable" class="config-notice warning">
+              <Info :size="18" :stroke-width="1.9" />
+              <span>
+                <strong>该配置文件不可写</strong>
+                <small>保存按钮已禁用。可下载修改后的内容，或按部署开启可写权限。</small>
+              </span>
+            </div>
+            <div v-else class="config-notice">
+              <Info :size="18" :stroke-width="1.9" />
+              <span>
+                <strong>保存只写盘，不会自动重载</strong>
+                <small>保存后点卡片上的「热重载」（需启用 admin API）或重启 frpc 服务。</small>
+              </span>
+            </div>
             <textarea
               v-model="configContent"
               class="config-editor"
@@ -321,17 +317,47 @@ function localTarget(rule: ProxyRule) {
 </template>
 
 <style scoped>
-/* el-alert 的 description 必须完整换行显示，不能被父容器裁切 */
-:deep(.el-alert__description) {
-  white-space: normal;
-  word-break: break-word;
-  overflow: visible;
-  line-height: 1.5;
-}
-
 .config-drawer {
   width: 760px;
   max-width: 94vw;
+}
+
+.config-notice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 12px 14px;
+  border: 1px solid rgba(96, 165, 250, 0.24);
+  border-radius: 10px;
+  background: rgba(239, 246, 255, 0.74);
+  color: #1d4ed8;
+}
+
+.config-notice.warning {
+  border-color: rgba(245, 158, 11, 0.28);
+  background: rgba(255, 251, 235, 0.82);
+  color: #b45309;
+}
+
+.config-notice span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.config-notice strong {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.config-notice small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .config-editor {

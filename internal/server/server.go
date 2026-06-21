@@ -53,7 +53,9 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("PUT /api/config-files/{id}", api.saveConfigFile)
 	mux.HandleFunc("GET /api/proxies/status", api.proxiesStatus)
 	mux.HandleFunc("GET /api/frps/targets", api.listFrpsTargets)
+	mux.HandleFunc("POST /api/frps/targets/test", api.testFrpsTarget)
 	mux.HandleFunc("POST /api/frps/targets", api.createFrpsTarget)
+	mux.HandleFunc("POST /api/frps/targets/{id}/test", api.testFrpsTargetByID)
 	mux.HandleFunc("PUT /api/frps/targets/{id}", api.updateFrpsTarget)
 	mux.HandleFunc("DELETE /api/frps/targets/{id}", api.deleteFrpsTarget)
 	mux.HandleFunc("GET /api/frps/metrics", api.frpsMetrics)
@@ -237,6 +239,24 @@ func (h apiHandler) createFrpsTarget(w http.ResponseWriter, r *http.Request) {
 	}
 	payload, err := h.service.CreateFrpsTarget(r.Context(), input)
 	writeResultStatus(w, http.StatusCreated, payload, err)
+}
+
+func (h apiHandler) testFrpsTarget(w http.ResponseWriter, r *http.Request) {
+	var input app.FrpsTargetInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	payload, err := h.service.TestFrpsTarget(r.Context(), input)
+	writeResult(w, payload, err)
+}
+
+func (h apiHandler) testFrpsTargetByID(w http.ResponseWriter, r *http.Request) {
+	var input app.FrpsTargetInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	payload, err := h.service.TestFrpsTargetByID(r.Context(), r.PathValue("id"), input)
+	writeResult(w, payload, err)
 }
 
 func (h apiHandler) updateFrpsTarget(w http.ResponseWriter, r *http.Request) {

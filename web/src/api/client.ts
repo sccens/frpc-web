@@ -136,6 +136,17 @@ export interface FrpsProxyMetric {
   trafficOutRate: number
 }
 
+export interface FrpsTargetTestResult {
+  ok: boolean
+  status: 'ok' | 'warning' | 'error'
+  message: string
+  clientCount: number
+  proxyCount: number
+  connectionCount: number
+  trafficIn: number
+  trafficOut: number
+}
+
 export interface FrpsTargetMetrics {
   target: FrpsTargetView
   clientCount: number
@@ -330,6 +341,16 @@ export async function createFrpsTarget(input: FrpsTargetInput) {
 
 export async function updateFrpsTarget(id: string, input: FrpsTargetInput) {
   const { data } = await http.put<FrpsTargetView>(`/frps/targets/${id}`, input)
+  return data
+}
+
+export async function testFrpsTarget(input: FrpsTargetInput) {
+  const { data } = await http.post<FrpsTargetTestResult>('/frps/targets/test', input)
+  return data
+}
+
+export async function testFrpsTargetById(id: string, input: FrpsTargetInput) {
+  const { data } = await http.post<FrpsTargetTestResult>(`/frps/targets/${id}/test`, input)
   return data
 }
 

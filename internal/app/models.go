@@ -231,6 +231,17 @@ type FrpsProxyMetric struct {
 	TrafficOutRate  float64 `json:"trafficOutRate"`
 }
 
+type FrpsTargetTestResult struct {
+	OK              bool   `json:"ok"`
+	Status          string `json:"status"`
+	Message         string `json:"message"`
+	ClientCount     int    `json:"clientCount"`
+	ProxyCount      int    `json:"proxyCount"`
+	ConnectionCount int    `json:"connectionCount"`
+	TrafficIn       int64  `json:"trafficIn"`
+	TrafficOut      int64  `json:"trafficOut"`
+}
+
 type FrpsTargetMetrics struct {
 	Target          FrpsTargetView     `json:"target"`
 	ClientCount     int                `json:"clientCount"`

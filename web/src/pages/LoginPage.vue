@@ -46,24 +46,24 @@ async function submit() {
         </div>
 
         <div class="auth-story-copy">
-          <span class="auth-pill"><Sparkles :size="14" :stroke-width="1.8" /> Secure Access</span>
-          <h1>Welcome Back</h1>
-          <p>使用本机 Access Key 进入控制台，查看 frpc 配置、连接拓扑与实时状态，编辑配置并触发热重载。</p>
+          <span class="auth-pill"><Sparkles :size="14" :stroke-width="1.8" /> 安全访问</span>
+          <h1>欢迎回来</h1>
+          <p>使用本机访问密钥进入控制台，查看 frpc 配置、连接拓扑与实时状态，编辑配置并触发热重载。</p>
         </div>
 
         <div class="control-preview-card">
           <div class="control-preview-top">
-            <span><i class="live-dot" /> Local Console</span>
-            <code>Session Cookie</code>
+            <span><i class="live-dot" /> 本机控制台</span>
+            <code>会话 Cookie</code>
           </div>
           <div class="control-preview-grid">
             <div>
               <strong>127.0.0.1</strong>
-              <span>Default Bind</span>
+              <span>默认监听</span>
             </div>
             <div>
               <strong>12h</strong>
-              <span>Session TTL</span>
+              <span>会话有效期</span>
             </div>
           </div>
         </div>
@@ -74,13 +74,13 @@ async function submit() {
           <ShieldCheck :size="22" :stroke-width="1.7" />
         </div>
         <div class="auth-card-heading">
-          <p class="overline">Owner Login</p>
-          <h2>Secure Access</h2>
-          <span>输入 Access Key 后，后端会签发 HttpOnly 会话 Cookie。首次使用请用初始密钥登录（见安装输出 / README），登录后需设置自己的新密码。</span>
+          <p class="overline">管理员登录</p>
+          <h2>安全访问</h2>
+          <span>输入访问密钥后，后端会签发 HttpOnly 会话 Cookie。首次使用请用初始密钥登录（见安装输出 / README），登录后需设置自己的新密码。</span>
         </div>
 
         <label class="auth-control-field">
-          <span>Access Key</span>
+          <span>访问密钥</span>
           <KeyRound :size="17" :stroke-width="1.7" />
           <input v-model="accessKey" type="password" autocomplete="current-password" placeholder="输入你的访问密钥" />
         </label>

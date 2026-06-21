@@ -3,6 +3,9 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -136,6 +139,114 @@ func TestFrpsTargetMetricsUsesEmptySlicesBeforeFirstScrape(t *testing.T) {
 	}
 	if string(raw["proxies"]) != "[]" || string(raw["history"]) != "[]" {
 		t.Fatalf("proxies/history should marshal as empty arrays, got %s", data)
+	}
+}
+
+func TestFrpsHistoryPersistsAndRestores(t *testing.T) {
+	ctx := context.Background()
+	store := &updateTestStore{}
+	svc := NewService(Options{Store: store, Runtime: &frpsTestRuntime{}, Addr: "127.0.0.1:8080"})
+	target := FrpsTarget{
+		ID:              "frps-1",
+		Name:            "edge-frps",
+		URL:             "http://127.0.0.1:7500",
+		Enabled:         true,
+		IntervalSeconds: 5,
+	}
+	if err := store.SetSetting(ctx, frpsTargetsSettingKey, `[{"id":"frps-1","name":"edge-frps","url":"http://127.0.0.1:7500","enabled":true,"intervalSeconds":5}]`); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+
+	svc.frps.storeSample(target.ID, frpsMetricSample{
+		ScrapedAt:  time.Unix(100, 0),
+		TrafficIn:  100,
+		TrafficOut: 200,
+	})
+	svc.frps.storeSample(target.ID, frpsMetricSample{
+		ScrapedAt:  time.Unix(110, 0),
+		TrafficIn:  180,
+		TrafficOut: 260,
+	})
+	if err := svc.saveFrpsHistory(ctx, svc.frps.HistorySnapshot()); err != nil {
+		t.Fatalf("save history: %v", err)
+	}
+
+	restored := NewService(Options{Store: store, Runtime: &frpsTestRuntime{}, Addr: "127.0.0.1:8080"})
+	history, err := restored.loadFrpsHistory(ctx)
+	if err != nil {
+		t.Fatalf("load history: %v", err)
+	}
+	restored.frps.LoadHistory(history)
+	metrics := restored.frps.TargetMetrics(target)
+	if len(metrics.History) != 2 {
+		t.Fatalf("restored history length = %d, want 2: %#v", len(metrics.History), metrics.History)
+	}
+	if metrics.History[1].TrafficInRate != 8 || metrics.History[1].TrafficOutRate != 6 {
+		t.Fatalf("unexpected restored rates: %#v", metrics.History[1])
+	}
+
+	if err := restored.DeleteFrpsTarget(ctx, target.ID); err != nil {
+		t.Fatalf("delete target: %v", err)
+	}
+	history, err = restored.loadFrpsHistory(ctx)
+	if err != nil {
+		t.Fatalf("load history after delete: %v", err)
+	}
+	if len(history) != 0 {
+		t.Fatalf("history should be removed after target delete: %#v", history)
+	}
+}
+
+func TestFrpsTargetTestConnection(t *testing.T) {
+	ctx := context.Background()
+	var sawAuth bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != "admin" || pass != "secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		sawAuth = true
+		_, _ = w.Write([]byte(`
+frp_server_client_counts 2
+frp_server_proxy_counts_detailed{name="ssh",type="tcp"} 1
+frp_server_connection_counts{name="ssh",type="tcp"} 3
+frp_server_traffic_in{name="ssh",type="tcp"} 100
+frp_server_traffic_out{name="ssh",type="tcp"} 200
+`))
+	}))
+	defer ts.Close()
+
+	svc := NewService(Options{Store: &updateTestStore{}, Runtime: &frpsTestRuntime{}, Addr: "127.0.0.1:8080"})
+	result, err := svc.TestFrpsTarget(ctx, FrpsTargetInput{
+		URL:             ts.URL,
+		Username:        "admin",
+		Password:        "secret",
+		Enabled:         true,
+		IntervalSeconds: 5,
+	})
+	if err != nil {
+		t.Fatalf("test target: %v", err)
+	}
+	if !result.OK || !sawAuth || result.ProxyCount != 1 || result.TrafficIn != 100 || result.TrafficOut != 200 {
+		t.Fatalf("unexpected success result: %#v sawAuth=%v", result, sawAuth)
+	}
+
+	result, err = svc.TestFrpsTarget(ctx, FrpsTargetInput{
+		URL:             ts.URL,
+		Username:        "admin",
+		Password:        "wrong",
+		Enabled:         true,
+		IntervalSeconds: 5,
+	})
+	if err != nil {
+		t.Fatalf("test target auth failure: %v", err)
+	}
+	if result.OK || !strings.Contains(result.Message, "认证失败") {
+		t.Fatalf("unexpected auth failure result: %#v", result)
 	}
 }
 

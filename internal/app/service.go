@@ -88,6 +88,7 @@ func NewService(opts Options) *Service {
 		version: version,
 	}
 	svc.frps = NewFrpsMonitor(svc.loadFrpsTargets)
+	svc.frps.SetHistorySaver(svc.saveFrpsHistory)
 	return svc
 }
 
@@ -98,6 +99,9 @@ func (s *Service) StartScanner(ctx context.Context) {
 
 // StartFrpsMonitor 启动 frps Prometheus 指标轮询，阻塞至 ctx 取消。
 func (s *Service) StartFrpsMonitor(ctx context.Context) {
+	if history, err := s.loadFrpsHistory(ctx); err == nil {
+		s.frps.LoadHistory(history)
+	}
 	s.frps.Run(ctx)
 }
 
@@ -337,7 +341,10 @@ func (s *Service) UpdateSettings(ctx context.Context, input SettingsInput) (Sett
 
 // ——— frps 流量监控目标 ———
 
-const frpsTargetsSettingKey = "frps_targets"
+const (
+	frpsTargetsSettingKey = "frps_targets"
+	frpsHistorySettingKey = "frps_history"
+)
 
 func (s *Service) FrpsTargets(ctx context.Context) ([]FrpsTargetView, error) {
 	targets, err := s.loadFrpsTargets(ctx)
@@ -415,7 +422,46 @@ func (s *Service) DeleteFrpsTarget(ctx context.Context, id string) error {
 		return err
 	}
 	s.frps.RemoveTarget(id)
+	if err := s.deleteFrpsHistory(ctx, id); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *Service) TestFrpsTarget(ctx context.Context, input FrpsTargetInput) (FrpsTargetTestResult, error) {
+	if strings.TrimSpace(input.Name) == "" {
+		input.Name = "frps-test"
+	}
+	target, err := normalizeFrpsTargetInput(input, FrpsTarget{})
+	if err != nil {
+		return FrpsTargetTestResult{}, invalidInput(err)
+	}
+	return s.frps.TestTarget(ctx, target)
+}
+
+func (s *Service) TestFrpsTargetByID(ctx context.Context, id string, input FrpsTargetInput) (FrpsTargetTestResult, error) {
+	targets, err := s.loadFrpsTargets(ctx)
+	if err != nil {
+		return FrpsTargetTestResult{}, err
+	}
+	for _, previous := range targets {
+		if previous.ID != id {
+			continue
+		}
+		if strings.TrimSpace(input.Name) == "" {
+			input.Name = previous.Name
+		}
+		if strings.TrimSpace(input.URL) == "" {
+			input.URL = previous.URL
+		}
+		target, err := normalizeFrpsTargetInput(input, previous)
+		if err != nil {
+			return FrpsTargetTestResult{}, invalidInput(err)
+		}
+		target.ID = previous.ID
+		return s.frps.TestTarget(ctx, target)
+	}
+	return FrpsTargetTestResult{}, ErrNotFound
 }
 
 func (s *Service) FrpsMetrics(ctx context.Context) (FrpsMetricsOverview, error) {
@@ -467,21 +513,86 @@ func (s *Service) saveFrpsTargets(ctx context.Context, targets []FrpsTarget) err
 	return s.store.SetSetting(ctx, frpsTargetsSettingKey, string(data))
 }
 
+func (s *Service) loadFrpsHistory(ctx context.Context) (map[string][]FrpsTrafficPoint, error) {
+	raw, err := s.store.GetSetting(ctx, frpsHistorySettingKey)
+	if errors.Is(err, ErrNotFound) || strings.TrimSpace(raw) == "" {
+		return map[string][]FrpsTrafficPoint{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var history map[string][]FrpsTrafficPoint
+	if err := json.Unmarshal([]byte(raw), &history); err != nil {
+		return nil, fmt.Errorf("parse frps history failed: %w", err)
+	}
+	for id, points := range history {
+		points = normalizeFrpsHistory(points)
+		if len(points) == 0 {
+			delete(history, id)
+			continue
+		}
+		history[id] = points
+	}
+	if history == nil {
+		history = map[string][]FrpsTrafficPoint{}
+	}
+	return history, nil
+}
+
+func (s *Service) saveFrpsHistory(ctx context.Context, history map[string][]FrpsTrafficPoint) error {
+	if history == nil {
+		history = map[string][]FrpsTrafficPoint{}
+	}
+	targets, err := s.loadFrpsTargets(ctx)
+	if err != nil {
+		return err
+	}
+	knownTargets := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		knownTargets[target.ID] = struct{}{}
+	}
+	clean := make(map[string][]FrpsTrafficPoint, len(history))
+	for id, points := range history {
+		points = normalizeFrpsHistory(points)
+		if strings.TrimSpace(id) == "" || len(points) == 0 {
+			continue
+		}
+		if _, ok := knownTargets[id]; !ok {
+			continue
+		}
+		clean[id] = points
+	}
+	data, err := json.Marshal(clean)
+	if err != nil {
+		return err
+	}
+	return s.store.SetSetting(ctx, frpsHistorySettingKey, string(data))
+}
+
+func (s *Service) deleteFrpsHistory(ctx context.Context, id string) error {
+	history, err := s.loadFrpsHistory(ctx)
+	if err != nil {
+		return err
+	}
+	delete(history, id)
+	return s.saveFrpsHistory(ctx, history)
+}
+
 func normalizeFrpsTargetInput(input FrpsTargetInput, previous FrpsTarget) (FrpsTarget, error) {
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
-		return FrpsTarget{}, errors.New("frps name is required")
+		return FrpsTarget{}, errors.New("服务端名称不能为空")
 	}
 	rawURL := strings.TrimRight(strings.TrimSpace(input.URL), "/")
 	if rawURL == "" {
-		return FrpsTarget{}, errors.New("frps url is required")
+		return FrpsTarget{}, errors.New("Dashboard 地址不能为空")
 	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return FrpsTarget{}, errors.New("frps url must be an absolute http(s) URL")
+		return FrpsTarget{}, errors.New("Dashboard 地址必须是完整的 http(s) URL")
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return FrpsTarget{}, errors.New("frps url only supports http or https")
+		return FrpsTarget{}, errors.New("Dashboard 地址仅支持 http 或 https")
 	}
 	interval := input.IntervalSeconds
 	if interval == 0 {
@@ -491,7 +602,7 @@ func normalizeFrpsTargetInput(input FrpsTargetInput, previous FrpsTarget) (FrpsT
 		interval = defaultFrpsIntervalSeconds
 	}
 	if interval < minFrpsIntervalSeconds || interval > maxFrpsIntervalSeconds {
-		return FrpsTarget{}, fmt.Errorf("intervalSeconds must be between %d and %d", minFrpsIntervalSeconds, maxFrpsIntervalSeconds)
+		return FrpsTarget{}, fmt.Errorf("轮询秒数必须在 %d 到 %d 之间", minFrpsIntervalSeconds, maxFrpsIntervalSeconds)
 	}
 	password := strings.TrimSpace(input.Password)
 	if previous.ID != "" && password == "" {

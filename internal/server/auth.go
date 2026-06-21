@@ -161,6 +161,10 @@ func auditMetaFor(r *http.Request) (auditMeta, bool) {
 		return auditMeta{"auth.access_key", "settings", "access_key"}, true
 	case path == "/api/frps/targets" && method == http.MethodPost:
 		return auditMeta{"frps.create", "frps", ""}, true
+	case path == "/api/frps/targets/test" && method == http.MethodPost:
+		return auditMeta{"frps.test", "frps", ""}, true
+	case len(parts) == 5 && parts[1] == "frps" && parts[2] == "targets" && parts[4] == "test" && method == http.MethodPost:
+		return auditMeta{"frps.test", "frps", part(parts, 3)}, true
 	case len(parts) == 4 && parts[1] == "frps" && parts[2] == "targets" && method == http.MethodPut:
 		return auditMeta{"frps.update", "frps", part(parts, 3)}, true
 	case len(parts) == 4 && parts[1] == "frps" && parts[2] == "targets" && method == http.MethodDelete:
