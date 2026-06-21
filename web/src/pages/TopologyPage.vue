@@ -153,7 +153,7 @@ const overviewSummary = computed(() => {
   const activeRules = serverCards.value.reduce((total, card) => total + card.activeRules.length, 0)
   return {
     activeRules,
-    runningServers: servers.value.filter((server) => server.status === 'running' || server.status === 'reloading').length,
+    runningServers: servers.value.filter((server) => server.status === 'running').length,
   }
 })
 

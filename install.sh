@@ -21,6 +21,8 @@ set -e
 #   SKIP_SERVICE=1               只装二进制，不配置 systemd
 #   SOURCE_BIN=path/to/frpc-web  跳过下载，安装本地二进制
 #   INSECURE_SKIP_CHECKSUM=1     跳过 SHA256 校验（默认 fail-closed，不建议）
+#   ALLOW_CONFIG_EDIT=1          允许面板写入配置目录（默认 /etc/frpc）以便页内编辑；
+#                                  会加入 systemd ReadWritePaths 并授权组写
 
 REPO="sccens/frpc-web"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
@@ -299,6 +301,18 @@ setup_service() {
     $SVC_SUDO install -d -m 0755 -o "$APP_USER" -g "$APP_GROUP" "$SERVICE_DIR/bin"
     $SVC_SUDO install -d -m 0700 -o "$APP_USER" -g "$APP_GROUP" "$SERVICE_DIR/data"
 
+    # v2.0：ALLOW_CONFIG_EDIT=1 时把 frpc 配置目录加入可写范围并授权组写，
+    # 让面板能在页内编辑配置文件。默认关闭以保持 systemd 加固（ProtectSystem=strict）。
+    EXTRA_RW_PATHS=""
+    if [ "${ALLOW_CONFIG_EDIT:-0}" = "1" ]; then
+        CONFIG_DIR="${FRPC_WEB_CONFIG_DIR:-/etc/frpc}"
+        $SVC_SUDO mkdir -p "$CONFIG_DIR"
+        $SVC_SUDO chgrp "$APP_GROUP" "$CONFIG_DIR" 2>/dev/null || true
+        $SVC_SUDO chmod g+w "$CONFIG_DIR" 2>/dev/null || true
+        EXTRA_RW_PATHS=" $CONFIG_DIR"
+        info "已启用配置可写：$CONFIG_DIR（组 $APP_GROUP 可写；已存在的 root 文件可能仍需手动 chown）"
+    fi
+
     # 服务模式下二进制归服务用户所有，Web 控制台的一键自更新才能替换它；
     # /usr/local/bin 保留软链接方便命令行调用
     SERVICE_BIN="$SERVICE_DIR/bin/$BINARY_NAME"
@@ -311,6 +325,7 @@ setup_service() {
         printf '%s\n' \
             "FRPC_WEB_ADDR=127.0.0.1:8080" \
             "FRPC_WEB_DATA_DIR=$SERVICE_DIR/data" \
+            "FRPC_WEB_CONFIG_PATH=" \
             "FRPC_WEB_GITHUB_PROXY=" \
             "FRPC_WEB_ACCESS_KEY=" \
             "FRPC_WEB_TRUSTED_PROXY=" \
@@ -339,7 +354,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=$SERVICE_DIR/data $SERVICE_DIR/bin
+ReadWritePaths=$SERVICE_DIR/data $SERVICE_DIR/bin$EXTRA_RW_PATHS
 LimitNOFILE=65535
 
 [Install]
@@ -407,6 +422,11 @@ show_usage() {
         echo ""
         echo "  用初始密钥登录（出厂默认 FrpcWeb-Init-9527），首次登录后按提示设置你自己的密码"
         echo "  （如需自定义初始密钥，在 $SERVICE_ENV_FILE 设置 FRPC_WEB_ACCESS_KEY 后重启）"
+        echo ""
+        echo "  v2.0：面板只读监控磁盘上的 frpc 配置文件（/etc/frpc、/usr/local/etc/frpc"
+        echo "  或 \$SERVICE_ENV_FILE 里的 FRPC_WEB_CONFIG_PATH）。frpc 进程请用 systemd 单独"
+        echo "  管理；面板通过其 admin API 显示实时状态、触发热重载。"
+        echo "  如需在面板内编辑配置，重跑安装并加 ALLOW_CONFIG_EDIT=1。"
         echo ""
         echo "🔧 常用命令:"
         echo ""

@@ -4,13 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/sccens/frpc-web/internal/app"
 )
 
-func TestStoreCRUDAndFilePermissions(t *testing.T) {
+func TestStoreSettingsSessionsAndFilePermissions(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 
@@ -26,91 +25,34 @@ func TestStoreCRUDAndFilePermissions(t *testing.T) {
 		t.Fatalf("state file mode = %v, want 0600", mode.Perm())
 	}
 
-	version, err := store.AddVersion(ctx, app.FRPCVersion{
-		Version:   "0.69.1",
-		Platform:  "linux",
-		Arch:      "amd64",
-		Path:      filepath.Join(dir, "frpc"),
-		Source:    "offline",
-		Active:    true,
-		Installed: true,
-	})
-	if err != nil {
-		t.Fatalf("add version: %v", err)
+	// settings 持久化
+	if err := store.SetSetting(ctx, "github_proxy", "https://proxy.example/"); err != nil {
+		t.Fatalf("set setting: %v", err)
 	}
-	active, err := store.ActiveVersion(ctx)
-	if err != nil {
-		t.Fatalf("active version: %v", err)
-	}
-	if active.ID != version.ID || !active.Active {
-		t.Fatalf("unexpected active version: %#v", active)
+	got, err := store.GetSetting(ctx, "github_proxy")
+	if err != nil || got != "https://proxy.example/" {
+		t.Fatalf("get setting: err=%v got=%q", err, got)
 	}
 
-	server, err := store.CreateServer(ctx, app.ServerInput{
-		Name:              "Home Lab",
-		ServerAddr:        "frp.example.com",
-		ServerPort:        7000,
-		AuthToken:         "secret",
-		TransportProtocol: "tcp",
-		AutoStart:         true,
-		AutoRestart:       true,
-		MaxRestarts:       4,
-	})
+	// session 持久化
+	sess, err := store.CreateSession(ctx, app.Session{IDHash: "hash-1", ExpiresAt: "2099-01-01T00:00:00Z"})
 	if err != nil {
-		t.Fatalf("create server: %v", err)
+		t.Fatalf("create session: %v", err)
 	}
-	if server.AdminPort == 0 {
-		t.Fatal("admin port should be allocated")
-	}
-	if server.AdminUser == "" || server.AdminPassword == "" {
-		t.Fatal("admin credentials should be defaulted")
-	}
-	if !server.AutoRestart || server.MaxRestarts != 4 {
-		t.Fatalf("unexpected restart policy: auto=%v max=%d", server.AutoRestart, server.MaxRestarts)
+	if _, err := store.GetSessionByHash(ctx, "hash-1"); err != nil {
+		t.Fatalf("get session: %v", err)
 	}
 
-	rule, err := store.CreateRule(ctx, server.ID, app.ProxyRuleInput{
-		Name:       "ssh",
-		Type:       "tcp",
-		LocalIP:    "127.0.0.1",
-		LocalPort:  22,
-		RemotePort: 6022,
-		Enabled:    true,
-	})
-	if err != nil {
-		t.Fatalf("create rule: %v", err)
-	}
-	if !rule.Enabled || rule.RemotePort != 6022 {
-		t.Fatalf("unexpected rule: %#v", rule)
-	}
-	if _, err := store.CreateRule(ctx, server.ID, app.ProxyRuleInput{
-		Name: "ssh", Type: "tcp", LocalIP: "127.0.0.1", LocalPort: 22, RemotePort: 6023, Enabled: true,
-	}); err == nil || !strings.Contains(err.Error(), "already exists") {
-		t.Fatalf("duplicate rule name error = %v, want already exists", err)
-	}
-
-	servers, err := store.ListServers(ctx)
-	if err != nil {
-		t.Fatalf("list servers: %v", err)
-	}
-	if len(servers) != 1 || servers[0].ProxyCount != 1 {
-		t.Fatalf("unexpected servers: %#v", servers)
-	}
-
-	// 重新打开验证持久化：状态应从 state.json 完整恢复。
+	// 重新打开：settings 与 sessions 应从 state.json 完整恢复。
 	reopened, err := Open(ctx, dir)
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}
-	restored, err := reopened.GetServer(ctx, server.ID)
-	if err != nil {
-		t.Fatalf("get restored server: %v", err)
+	if v, _ := reopened.GetSetting(ctx, "github_proxy"); v != "https://proxy.example/" {
+		t.Fatalf("setting not restored: %q", v)
 	}
-	if restored.AuthToken != "secret" || restored.ProxyCount != 1 {
-		t.Fatalf("unexpected restored server: %#v", restored)
-	}
-	if _, err := reopened.ActiveVersion(ctx); err != nil {
-		t.Fatalf("restored active version: %v", err)
+	if _, err := reopened.GetSessionByHash(ctx, sess.IDHash); err != nil {
+		t.Fatalf("session not restored: %v", err)
 	}
 }
 
@@ -121,9 +63,6 @@ func TestStoreNotFoundAndAuditCap(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 
-	if _, err := store.GetServer(ctx, "missing"); err != app.ErrNotFound {
-		t.Fatalf("get missing server error = %v, want ErrNotFound", err)
-	}
 	if _, err := store.GetSetting(ctx, "missing"); err != app.ErrNotFound {
 		t.Fatalf("get missing setting error = %v, want ErrNotFound", err)
 	}
@@ -146,6 +85,26 @@ func TestStoreNotFoundAndAuditCap(t *testing.T) {
 	page, err = store.ListAuditLogs(ctx, app.AuditLogQuery{})
 	if err != nil || page.Total != 0 {
 		t.Fatalf("audit after clear: total=%d err=%v", page.Total, err)
+	}
+}
+
+// v1 的 state.json（含 servers/versions）首启应被备份为 state.json.v1.bak。
+func TestStoreBacksUpLegacyState(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	legacy := `{"settings":{},"servers":[{"id":"x","name":"old"}],"versions":[]}`
+	if err := os.WriteFile(filepath.Join(dir, stateFileName), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open with legacy state: %v", err)
+	}
+	defer store.Close()
+
+	backup := filepath.Join(dir, stateFileName+".v1.bak")
+	if _, err := os.Stat(backup); err != nil {
+		t.Fatalf("legacy backup not created: %v", err)
 	}
 }
 

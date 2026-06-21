@@ -8,11 +8,16 @@ services:
     environment:
       FRPC_WEB_ADDR: 0.0.0.0:8080
       FRPC_WEB_DATA_DIR: /data
+      # v2.0：要监控的 frpc 配置文件路径（PATH 分隔符分隔多个），默认扫描 /etc/frpc 等
+      FRPC_WEB_CONFIG_PATH: ""
       FRPC_WEB_GITHUB_PROXY: ""
       FRPC_WEB_ACCESS_KEY: ""
       FRPC_WEB_TRUSTED_PROXY: ""
     volumes:
       - frpc-web-data:/data
+      # v2.0：把宿主机的 frpc 配置挂入容器供面板读取（只读即可编辑降级为下载）。
+      # 若需面板内编辑保存，改为可写挂载并把配置目录的属组设为 frpc-web。
+      # - ./frpc-configs:/etc/frpc:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

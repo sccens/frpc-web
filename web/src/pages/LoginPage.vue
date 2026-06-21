@@ -20,7 +20,7 @@ async function submit() {
   loading.value = true
   try {
     await login({ accessKey: accessKey.value.trim() })
-    await router.replace(String(route.query.redirect || '/dashboard'))
+    await router.replace(String(route.query.redirect || '/topology'))
   } catch (err) {
     ElMessage.error(errorMessage(err, '登录失败'))
   } finally {
@@ -48,7 +48,7 @@ async function submit() {
         <div class="auth-story-copy">
           <span class="auth-pill"><Sparkles :size="14" :stroke-width="1.8" /> Secure Access</span>
           <h1>Welcome Back</h1>
-          <p>使用本机 Access Key 进入控制台，管理 frpc 安装、代理规则、日志与运行状态。</p>
+          <p>使用本机 Access Key 进入控制台，查看 frpc 配置、连接拓扑与实时状态，编辑配置并触发热重载。</p>
         </div>
 
         <div class="control-preview-card">

@@ -78,3 +78,33 @@ func (r *Runtime) ProxyStatus(ctx context.Context, server app.Server) ([]app.Pro
 	sort.Slice(statuses, func(i, j int) bool { return statuses[i].Name < statuses[j].Name })
 	return statuses, nil
 }
+
+// Reload 调用 frpc admin API 的 GET /api/reload，让 frpc 重读其启动时（-c）指定的
+// 配置文件。注意：它重载的是 frpc 进程自己的配置文件路径，不是本面板扫描到的路径；
+// 若两者不一致，reload 不会报错也不会生效，调用方需自行对齐校验。
+func (r *Runtime) Reload(ctx context.Context, server app.Server) error {
+	addr := server.AdminAddr
+	if addr == "" {
+		addr = "127.0.0.1"
+	}
+	url := fmt.Sprintf("http://%s/api/reload", net.JoinHostPort(addr, strconv.Itoa(server.AdminPort)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	if server.AdminUser != "" {
+		req.SetBasicAuth(server.AdminUser, server.AdminPassword)
+	}
+	resp, err := adminClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("frpc 管理接口不可达: %w", err)
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized:
+		return errors.New("frpc 管理接口认证失败，请检查配置中的 webServer 账号")
+	case resp.StatusCode != http.StatusOK:
+		return fmt.Errorf("frpc 管理接口返回 %s", resp.Status)
+	}
+	return nil
+}

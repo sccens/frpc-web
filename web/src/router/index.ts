@@ -2,7 +2,6 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { getAuthStatus } from '../api/client'
 
 const AppLayout = () => import('../layouts/AppLayout.vue')
-const DashboardPage = () => import('../pages/DashboardPage.vue')
 const LoginPage = () => import('../pages/LoginPage.vue')
 const ServersPage = () => import('../pages/ServersPage.vue')
 const SettingsPage = () => import('../pages/SettingsPage.vue')
@@ -15,15 +14,16 @@ export const router = createRouter({
     {
       path: '/',
       component: AppLayout,
-      redirect: '/dashboard',
+      redirect: '/topology',
       children: [
-        { path: 'dashboard', name: 'dashboard', component: DashboardPage },
-        { path: 'servers', name: 'servers', component: ServersPage },
         { path: 'topology', name: 'topology', component: TopologyPage },
+        { path: 'servers', name: 'servers', component: ServersPage },
         { path: 'settings', name: 'settings', component: SettingsPage },
-        { path: 'logs', redirect: '/dashboard' },
-        { path: 'stats', redirect: '/dashboard' },
-        { path: 'traffic', redirect: '/dashboard' },
+        // 兼容旧版书签
+        { path: 'dashboard', redirect: '/topology' },
+        { path: 'logs', redirect: '/topology' },
+        { path: 'stats', redirect: '/topology' },
+        { path: 'traffic', redirect: '/topology' },
         { path: 'audit', redirect: '/settings' },
         { path: 'versions', redirect: '/settings' },
       ],
@@ -44,7 +44,7 @@ router.beforeEach(async (to) => {
 
   if (isPublic) {
     if (status.authenticated) {
-      return { name: 'dashboard' }
+      return { name: 'topology' }
     }
     return to.name === 'login' ? true : { name: 'login', query: { redirect: to.fullPath } }
   }

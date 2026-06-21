@@ -44,42 +44,18 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("POST /api/auth/access-key", api.changeAccessKey)
 	mux.HandleFunc("GET /api/audit-logs", api.auditLogs)
 	mux.HandleFunc("DELETE /api/audit-logs", api.clearAuditLogs)
-	mux.HandleFunc("GET /api/dashboard", api.dashboard)
 	mux.HandleFunc("GET /api/settings", api.settings)
 	mux.HandleFunc("PUT /api/settings", api.updateSettings)
 	mux.HandleFunc("GET /api/config/export", api.exportConfig)
 	mux.HandleFunc("POST /api/config/import", api.importConfig)
-	mux.HandleFunc("GET /api/backups", api.listBackups)
-	mux.HandleFunc("POST /api/backups", api.createBackup)
-	mux.HandleFunc("GET /api/backups/{name}", api.downloadBackup)
-	mux.HandleFunc("POST /api/backups/{name}/restore", api.restoreBackup)
+	mux.HandleFunc("GET /api/config-files", api.listConfigFiles)
+	mux.HandleFunc("GET /api/config-files/{id}", api.readConfigFile)
+	mux.HandleFunc("PUT /api/config-files/{id}", api.saveConfigFile)
 	mux.HandleFunc("GET /api/proxies/status", api.proxiesStatus)
 	mux.HandleFunc("GET /api/servers", api.listServers)
-	mux.HandleFunc("POST /api/servers", api.createServer)
-	mux.HandleFunc("POST /api/servers/import-frpc", api.importFrpcConfig)
-	mux.HandleFunc("POST /api/servers/adopt", api.adoptProcess)
 	mux.HandleFunc("GET /api/servers/{id}", api.getServer)
-	mux.HandleFunc("PUT /api/servers/{id}", api.updateServer)
-	mux.HandleFunc("DELETE /api/servers/{id}", api.deleteServer)
-	mux.HandleFunc("POST /api/servers/{id}/start", api.startServer)
-	mux.HandleFunc("POST /api/servers/{id}/stop", api.stopServer)
-	mux.HandleFunc("POST /api/servers/{id}/restart", api.restartServer)
 	mux.HandleFunc("POST /api/servers/{id}/reload", api.reloadServer)
-	mux.HandleFunc("POST /api/servers/{id}/check", api.checkServer)
-	mux.HandleFunc("GET /api/servers/{id}/rules", api.listRules)
-	mux.HandleFunc("POST /api/servers/{id}/rules", api.createRule)
-	mux.HandleFunc("PUT /api/servers/{id}/rules/{ruleId}", api.updateRule)
-	mux.HandleFunc("DELETE /api/servers/{id}/rules/{ruleId}", api.deleteRule)
 	mux.HandleFunc("GET /api/servers/{id}/logs", api.logs)
-	mux.HandleFunc("GET /api/servers/{id}/config/preview", api.configPreview)
-	mux.HandleFunc("GET /api/frpc/version", api.currentVersion)
-	mux.HandleFunc("GET /api/frpc/versions", api.versions)
-	mux.HandleFunc("GET /api/frpc/discover", api.discoverFRPC)
-	mux.HandleFunc("POST /api/frpc/register", api.registerBinary)
-	mux.HandleFunc("POST /api/frpc/versions/{id}/activate", api.activateVersion)
-	mux.HandleFunc("POST /api/frpc/check-latest", api.checkLatest)
-	mux.HandleFunc("POST /api/frpc/install/online", api.installOnline)
-	mux.HandleFunc("POST /api/frpc/install/offline", api.installOffline)
 	mux.HandleFunc("GET /api/app/update/check", api.updateCheck)
 	mux.HandleFunc("POST /api/app/update/apply", api.updateApply)
 	mux.Handle("/", staticHandler(opts.WebDir, opts.WebFS))
@@ -184,11 +160,6 @@ func (h apiHandler) clearAuditLogs(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, map[string]bool{"ok": true}, err)
 }
 
-func (h apiHandler) dashboard(w http.ResponseWriter, r *http.Request) {
-	payload, err := h.service.Dashboard(r.Context())
-	writeResult(w, payload, err)
-}
-
 func (h apiHandler) settings(w http.ResponseWriter, r *http.Request) {
 	payload, err := h.service.Settings(r.Context())
 	writeResult(w, payload, err)
@@ -222,36 +193,24 @@ func (h apiHandler) importConfig(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, payload, err)
 }
 
-func (h apiHandler) listBackups(w http.ResponseWriter, r *http.Request) {
-	payload, err := h.service.ListBackups(r.Context())
+func (h apiHandler) listConfigFiles(w http.ResponseWriter, r *http.Request) {
+	payload, err := h.service.ConfigFiles(r.Context())
 	writeResult(w, payload, err)
 }
 
-func (h apiHandler) createBackup(w http.ResponseWriter, r *http.Request) {
-	payload, err := h.service.BackupNow(r.Context())
-	writeResultStatus(w, http.StatusCreated, payload, err)
+func (h apiHandler) readConfigFile(w http.ResponseWriter, r *http.Request) {
+	payload, err := h.service.ReadConfigFile(r.Context(), r.PathValue("id"))
+	writeResult(w, payload, err)
 }
 
-func (h apiHandler) downloadBackup(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	data, err := h.service.ReadBackup(r.Context(), name)
-	if err != nil {
-		writeResult(w, nil, err)
-		return
+func (h apiHandler) saveConfigFile(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Content string `json:"content"`
 	}
-	// name 已通过 ReadBackup 的白名单校验，可安全拼入响应头。
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Content-Disposition", "attachment; filename="+name)
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
-}
-
-func (h apiHandler) restoreBackup(w http.ResponseWriter, r *http.Request) {
-	var input app.BackupRestoreInput
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	payload, err := h.service.RestoreBackup(r.Context(), r.PathValue("name"), input.Mode)
+	payload, err := h.service.SaveConfigFile(r.Context(), r.PathValue("id"), input.Content)
 	writeResult(w, payload, err)
 }
 
@@ -265,98 +224,13 @@ func (h apiHandler) listServers(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, payload, err)
 }
 
-func (h apiHandler) createServer(w http.ResponseWriter, r *http.Request) {
-	var input app.ServerInput
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	payload, err := h.service.CreateServer(r.Context(), input)
-	writeResultStatus(w, http.StatusCreated, payload, err)
-}
-
-func (h apiHandler) importFrpcConfig(w http.ResponseWriter, r *http.Request) {
-	var input app.ImportFrpcConfigInput
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	payload, err := h.service.ImportFrpcConfig(r.Context(), input)
-	writeResultStatus(w, http.StatusCreated, payload, err)
-}
-
-func (h apiHandler) adoptProcess(w http.ResponseWriter, r *http.Request) {
-	var input app.AdoptProcessInput
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	payload, err := h.service.AdoptProcess(r.Context(), input)
-	writeResultStatus(w, http.StatusCreated, payload, err)
-}
-
 func (h apiHandler) getServer(w http.ResponseWriter, r *http.Request) {
 	payload, err := h.service.Server(r.Context(), r.PathValue("id"))
 	writeResult(w, payload, err)
 }
 
-func (h apiHandler) updateServer(w http.ResponseWriter, r *http.Request) {
-	var input app.ServerInput
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	payload, err := h.service.UpdateServer(r.Context(), r.PathValue("id"), input)
-	writeResult(w, payload, err)
-}
-
-func (h apiHandler) deleteServer(w http.ResponseWriter, r *http.Request) {
-	err := h.service.DeleteServer(r.Context(), r.PathValue("id"))
-	writeResult(w, map[string]bool{"ok": true}, err)
-}
-
-func (h apiHandler) startServer(w http.ResponseWriter, r *http.Request) {
-	writeAction(w, h.service.Start(r.Context(), r.PathValue("id")))
-}
-
-func (h apiHandler) stopServer(w http.ResponseWriter, r *http.Request) {
-	writeAction(w, h.service.Stop(r.Context(), r.PathValue("id")))
-}
-
-func (h apiHandler) restartServer(w http.ResponseWriter, r *http.Request) {
-	writeAction(w, h.service.Restart(r.Context(), r.PathValue("id")))
-}
-
 func (h apiHandler) reloadServer(w http.ResponseWriter, r *http.Request) {
-	writeAction(w, h.service.Reload(r.Context(), r.PathValue("id")))
-}
-
-func (h apiHandler) checkServer(w http.ResponseWriter, r *http.Request) {
-	writeAction(w, h.service.Check(r.Context(), r.PathValue("id")))
-}
-
-func (h apiHandler) listRules(w http.ResponseWriter, r *http.Request) {
-	payload, err := h.service.Rules(r.Context(), r.PathValue("id"))
-	writeResult(w, payload, err)
-}
-
-func (h apiHandler) createRule(w http.ResponseWriter, r *http.Request) {
-	var input app.ProxyRuleInput
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	payload, err := h.service.CreateRule(r.Context(), r.PathValue("id"), input)
-	writeResultStatus(w, http.StatusCreated, payload, err)
-}
-
-func (h apiHandler) updateRule(w http.ResponseWriter, r *http.Request) {
-	var input app.ProxyRuleInput
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	payload, err := h.service.UpdateRule(r.Context(), r.PathValue("id"), r.PathValue("ruleId"), input)
-	writeResult(w, payload, err)
-}
-
-func (h apiHandler) deleteRule(w http.ResponseWriter, r *http.Request) {
-	err := h.service.DeleteRule(r.Context(), r.PathValue("id"), r.PathValue("ruleId"))
-	writeResult(w, map[string]bool{"ok": true}, err)
+	writeAction(w, h.service.ReloadViaAdmin(r.Context(), r.PathValue("id")))
 }
 
 func (h apiHandler) logs(w http.ResponseWriter, r *http.Request) {
@@ -368,72 +242,6 @@ func (h apiHandler) logs(w http.ResponseWriter, r *http.Request) {
 	}
 	payload, err := h.service.Logs(r.Context(), r.PathValue("id"), tail)
 	writeResult(w, payload, err)
-}
-
-func (h apiHandler) configPreview(w http.ResponseWriter, r *http.Request) {
-	payload, err := h.service.ConfigPreview(r.Context(), r.PathValue("id"))
-	writeResult(w, payload, err)
-}
-
-func (h apiHandler) currentVersion(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, h.service.CurrentVersion(r.Context()))
-}
-
-func (h apiHandler) versions(w http.ResponseWriter, r *http.Request) {
-	payload, err := h.service.Versions(r.Context())
-	writeResult(w, payload, err)
-}
-
-func (h apiHandler) discoverFRPC(w http.ResponseWriter, r *http.Request) {
-	payload, err := h.service.DiscoverFRPC(r.Context())
-	writeResult(w, payload, err)
-}
-
-func (h apiHandler) registerBinary(w http.ResponseWriter, r *http.Request) {
-	var input app.RegisterBinaryInput
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	payload, err := h.service.RegisterBinary(r.Context(), input)
-	writeResultStatus(w, http.StatusCreated, payload, err)
-}
-
-func (h apiHandler) activateVersion(w http.ResponseWriter, r *http.Request) {
-	payload, err := h.service.ActivateVersion(r.Context(), r.PathValue("id"))
-	writeResult(w, payload, err)
-}
-
-func (h apiHandler) checkLatest(w http.ResponseWriter, r *http.Request) {
-	var input app.LatestVersionInput
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	payload, err := h.service.CheckLatest(r.Context(), input)
-	writeResult(w, payload, err)
-}
-
-func (h apiHandler) installOnline(w http.ResponseWriter, r *http.Request) {
-	var input app.FRPCInstallOnlineInput
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	payload, err := h.service.InstallOnline(r.Context(), input)
-	writeResultStatus(w, http.StatusCreated, payload, err)
-}
-
-func (h apiHandler) installOffline(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("parse multipart form failed: %v", err))
-		return
-	}
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "file field is required")
-		return
-	}
-	defer file.Close()
-	payload, err := h.service.InstallOffline(r.Context(), header.Filename, file)
-	writeResultStatus(w, http.StatusCreated, payload, err)
 }
 
 func (h apiHandler) updateCheck(w http.ResponseWriter, r *http.Request) {

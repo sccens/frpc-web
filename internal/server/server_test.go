@@ -75,19 +75,11 @@ func TestAccessKeyAndAuditAPI(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	runtime := &serverFakeRuntime{alive: true}
-	svc := app.NewService(app.Options{Store: store, Runtime: runtime, Addr: "127.0.0.1:8080"})
+	svc := app.NewService(app.Options{Store: store, Runtime: &serverFakeRuntime{}, Addr: "127.0.0.1:8080"})
 	handler := New(Options{Service: svc, WebDir: t.TempDir()})
 
 	firstCookie := personalize(t, handler, "Password123")
 	secondCookie := loginCookie(t, handler, "Password123")
-
-	createServerReq := `{"name":"main","serverAddr":"frp.example.com","serverPort":7000,"transportProtocol":"tcp","adminPort":17400}`
-	assertStatus(t, handler, http.MethodPost, "/api/servers", createServerReq, http.StatusCreated, secondCookie)
-	servers, err := store.ListServers(ctx)
-	if err != nil || len(servers) != 1 {
-		t.Fatalf("list servers: servers=%#v err=%v", servers, err)
-	}
 
 	// 修改 Access Key 后所有会话立即失效。
 	assertStatus(t, handler, http.MethodPost, "/api/auth/access-key", `{"currentAccessKey":"Password123","newAccessKey":"NewPass456"}`, http.StatusOK, secondCookie)
@@ -246,64 +238,17 @@ func loginCookie(t *testing.T, handler http.Handler, accessKey string) *http.Coo
 	return rec.Result().Cookies()[0]
 }
 
-type serverFakeRuntime struct {
-	alive bool
-}
-
-func (r *serverFakeRuntime) RenderConfig(context.Context, app.Server) (app.ConfigPreview, error) {
-	return app.ConfigPreview{}, nil
-}
-
-func (r *serverFakeRuntime) CheckConfig(context.Context, app.Server, app.FRPCVersion) app.ActionResult {
-	return app.ActionResult{OK: true, Message: "ok"}
-}
-
-func (r *serverFakeRuntime) Start(context.Context, app.Server, app.FRPCVersion) (app.ProcessInfo, app.ActionResult) {
-	return app.ProcessInfo{}, app.ActionResult{OK: true, Message: "ok"}
-}
-
-func (r *serverFakeRuntime) Stop(context.Context, app.Server, app.ProcessInfo) app.ActionResult {
-	return app.ActionResult{OK: true, Message: "ok"}
-}
-
-func (r *serverFakeRuntime) Reload(context.Context, app.Server, app.FRPCVersion) app.ActionResult {
-	return app.ActionResult{OK: true, Message: "ok"}
-}
+// serverFakeRuntime 实现 app.Runtime（v2.0 只读三件套），供 server 层测试使用。
+type serverFakeRuntime struct{}
 
 func (r *serverFakeRuntime) Logs(context.Context, string, int) ([]app.LogLine, error) {
-	return []app.LogLine{}, nil
-}
-
-func (r *serverFakeRuntime) InstallOnline(context.Context, app.FRPCInstallOnlineInput) (app.FRPCVersion, error) {
-	return app.FRPCVersion{}, nil
-}
-
-func (r *serverFakeRuntime) InstallOffline(context.Context, string, io.Reader) (app.FRPCVersion, error) {
-	return app.FRPCVersion{}, nil
-}
-
-func (r *serverFakeRuntime) LatestVersion(context.Context, string) (string, error) {
-	return "0.70.0", nil
-}
-
-func (r *serverFakeRuntime) ProxyStatus(context.Context, app.Server) ([]app.ProxyStatus, error) {
-	return []app.ProxyStatus{}, nil
-}
-
-func (r *serverFakeRuntime) ProcessAlive(context.Context, int) bool {
-	return r.alive
-}
-
-func (r *serverFakeRuntime) SetExitHandler(func(string, error)) {}
-
-func (r *serverFakeRuntime) Adopt(string, int) {}
-
-func (r *serverFakeRuntime) DiscoverBinaries() []app.FRPCBinaryCandidate { return nil }
-
-func (r *serverFakeRuntime) DiscoverProcesses() ([]app.FRPCProcessCandidate, error) {
 	return nil, nil
 }
 
-func (r *serverFakeRuntime) RegisterBinary(path string) (app.FRPCVersion, error) {
-	return app.FRPCVersion{Version: "system", Path: path, Source: "system", Installed: true}, nil
+func (r *serverFakeRuntime) ProxyStatus(context.Context, app.Server) ([]app.ProxyStatus, error) {
+	return nil, nil
+}
+
+func (r *serverFakeRuntime) Reload(context.Context, app.Server) error {
+	return nil
 }

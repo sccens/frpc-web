@@ -11,6 +11,8 @@ const meta = computed(() => {
       return { label: 'Running', className: 'is-running' }
     case 'stopped':
       return { label: 'Stopped', className: 'is-stopped' }
+    case 'no-admin':
+      return { label: 'No Admin', className: 'is-warning' }
     case 'config_dirty':
       return { label: 'Dirty', className: 'is-warning' }
     case 'error':

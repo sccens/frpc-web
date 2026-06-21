@@ -61,10 +61,8 @@ func main() {
 		Addr:    addr,
 		Version: Version,
 	})
-	if err := svc.Restore(ctx); err != nil {
-		logger.Warn("restore runtime state failed", "error", err)
-	}
-	go svc.RunAutoBackup(ctx)
+	// v2.0：后台扫描磁盘上的 frpc 配置文件并探测各实例 admin API 实时状态。
+	go svc.StartScanner(ctx)
 
 	handler := server.New(server.Options{
 		Service:           svc,

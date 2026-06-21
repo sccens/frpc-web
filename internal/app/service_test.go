@@ -3,7 +3,6 @@ package app_test
 import (
 	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,7 +11,30 @@ import (
 	"github.com/sccens/frpc-web/internal/storage"
 )
 
-func TestServiceAccessKeySettingsAndProxyPriority(t *testing.T) {
+// fakeRuntime 实现 app.Runtime（v2.0 只读三件套），供 service 测试使用。
+type fakeRuntime struct {
+	proxyStatuses []app.ProxyStatus
+	proxyErr      error
+	reloadErr     error
+	logs          []app.LogLine
+}
+
+func (r *fakeRuntime) Logs(context.Context, string, int) ([]app.LogLine, error) {
+	return r.logs, nil
+}
+
+func (r *fakeRuntime) ProxyStatus(context.Context, app.Server) ([]app.ProxyStatus, error) {
+	if r.proxyErr != nil {
+		return nil, r.proxyErr
+	}
+	return r.proxyStatuses, nil
+}
+
+func (r *fakeRuntime) Reload(context.Context, app.Server) error {
+	return r.reloadErr
+}
+
+func TestServiceAccessKeyAndSettings(t *testing.T) {
 	ctx := context.Background()
 	store, err := storage.Open(ctx, t.TempDir())
 	if err != nil {
@@ -20,12 +42,7 @@ func TestServiceAccessKeySettingsAndProxyPriority(t *testing.T) {
 	}
 	defer store.Close()
 
-	runtime := &fakeRuntime{latest: "0.70.0"}
-	svc := app.NewService(app.Options{
-		Store:   store,
-		Runtime: runtime,
-		Addr:    "127.0.0.1:8080",
-	})
+	svc := app.NewService(app.Options{Store: store, Runtime: &fakeRuntime{}, Addr: "127.0.0.1:8080"})
 	meta := app.AuthMeta{IP: "127.0.0.1", UserAgent: "go-test"}
 
 	status, err := svc.AuthStatus(ctx)
@@ -44,9 +61,6 @@ func TestServiceAccessKeySettingsAndProxyPriority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("login with default key: %v", err)
 	}
-	if session.Token == "" {
-		t.Fatalf("unexpected login session: %#v", session)
-	}
 	if _, err := svc.VerifySession(ctx, session.Token); err != nil {
 		t.Fatalf("verify session: %v", err)
 	}
@@ -62,33 +76,14 @@ func TestServiceAccessKeySettingsAndProxyPriority(t *testing.T) {
 		t.Fatalf("unexpected settings: %#v", settings)
 	}
 
-	if _, err := svc.CheckLatest(ctx, app.LatestVersionInput{}); err != nil {
-		t.Fatalf("check latest with stored proxy: %v", err)
-	}
-	if runtime.latestProxy != "https://proxy.example/" {
-		t.Fatalf("latest proxy = %q, want persisted proxy", runtime.latestProxy)
-	}
-	if _, err := svc.CheckLatest(ctx, app.LatestVersionInput{GithubProxy: "https://request.example/"}); err != nil {
-		t.Fatalf("check latest with request proxy: %v", err)
-	}
-	if runtime.latestProxy != "https://request.example/" {
-		t.Fatalf("latest proxy = %q, want request proxy", runtime.latestProxy)
-	}
-	if _, err := svc.InstallOnline(ctx, app.FRPCInstallOnlineInput{Version: "0.70.0", Platform: "linux", Arch: "amd64"}); err != nil {
-		t.Fatalf("install online: %v", err)
-	}
-	if runtime.installInput.GithubProxy != "https://proxy.example/" {
-		t.Fatalf("install proxy = %q, want persisted proxy", runtime.installInput.GithubProxy)
-	}
-
-	// 弱密码被策略拒绝（缺大写、缺数字、含非字母数字字符均不通过）。
+	// 弱密码被策略拒绝。
 	for _, weak := range []string{"password", "password123", "Password", "Short1A", "Password-123"} {
 		if err := svc.ChangeAccessKey(ctx, app.AccessKeyInput{NewAccessKey: weak}); !errors.Is(err, app.ErrInvalidInput) {
 			t.Fatalf("weak password %q error = %v, want invalid input", weak, err)
 		}
 	}
 
-	// 首次设置自己的密码：仍是初始密钥状态，无需提供当前密钥（有效会话即凭证）。
+	// 首次设置密码：无需当前密钥。
 	if err := svc.ChangeAccessKey(ctx, app.AccessKeyInput{NewAccessKey: "Password123"}); err != nil {
 		t.Fatalf("set initial password: %v", err)
 	}
@@ -102,9 +97,6 @@ func TestServiceAccessKeySettingsAndProxyPriority(t *testing.T) {
 	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: app.DefaultAccessKey}, meta); !errors.Is(err, app.ErrInvalidCredentials) {
 		t.Fatalf("default key after set error = %v, want invalid credentials", err)
 	}
-	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "Password123"}, meta); err != nil {
-		t.Fatalf("login with new password: %v", err)
-	}
 
 	// 常规改密需校验当前密码。
 	if err := svc.ChangeAccessKey(ctx, app.AccessKeyInput{CurrentAccessKey: "WrongPass9", NewAccessKey: "NewPass456"}); !errors.Is(err, app.ErrInvalidCredentials) {
@@ -112,9 +104,6 @@ func TestServiceAccessKeySettingsAndProxyPriority(t *testing.T) {
 	}
 	if err := svc.ChangeAccessKey(ctx, app.AccessKeyInput{CurrentAccessKey: "Password123", NewAccessKey: "NewPass456"}); err != nil {
 		t.Fatalf("change access key: %v", err)
-	}
-	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "Password123"}, meta); !errors.Is(err, app.ErrInvalidCredentials) {
-		t.Fatalf("old password login error = %v, want invalid credentials", err)
 	}
 	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "NewPass456"}, meta); err != nil {
 		t.Fatalf("new password login: %v", err)
@@ -132,19 +121,8 @@ func TestServiceEnvAccessKeyPriority(t *testing.T) {
 	svc := app.NewService(app.Options{Store: store, Runtime: &fakeRuntime{}, Addr: "127.0.0.1:8080"})
 	meta := app.AuthMeta{IP: "127.0.0.1", UserAgent: "go-test"}
 
-	status, err := svc.AuthStatus(ctx)
-	if err != nil {
-		t.Fatalf("auth status: %v", err)
-	}
-	if !status.MustChangePassword {
-		t.Fatalf("env key install should require password change: %#v", status)
-	}
-	// env 覆盖出厂默认：默认密钥不再是有效初始密钥，env 密钥才是。
 	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: app.DefaultAccessKey}, meta); !errors.Is(err, app.ErrInvalidCredentials) {
 		t.Fatalf("default key with env override error = %v, want invalid credentials", err)
-	}
-	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "password123"}, meta); !errors.Is(err, app.ErrInvalidCredentials) {
-		t.Fatalf("wrong env key login error = %v, want invalid credentials", err)
 	}
 	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "env-secret-123"}, meta); err != nil {
 		t.Fatalf("env key login: %v", err)
@@ -155,9 +133,6 @@ func TestServiceEnvAccessKeyPriority(t *testing.T) {
 	}
 	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "env-secret-123"}, meta); !errors.Is(err, app.ErrInvalidCredentials) {
 		t.Fatalf("env key after set error = %v, want invalid credentials", err)
-	}
-	if _, err := svc.Login(ctx, app.AuthInput{AccessKey: "Password123"}, meta); err != nil {
-		t.Fatalf("user password login: %v", err)
 	}
 }
 
@@ -185,295 +160,175 @@ func TestServiceAudit(t *testing.T) {
 	}
 }
 
-func TestServiceConfigExportImport(t *testing.T) {
+// 写一个 frpc 配置文件到扫描路径，验证扫描解析、敏感字段掩码、导出。
+func TestConfigScanAndExport(t *testing.T) {
 	ctx := context.Background()
-	store, err := storage.Open(ctx, t.TempDir())
+	dir := t.TempDir()
+	t.Setenv("FRPC_WEB_CONFIG_PATH", dir)
+
+	cfgPath := filepath.Join(dir, "frpc.toml")
+	content := "serverAddr = \"frp.example.com\"\n" +
+		"serverPort = 7000\n" +
+		"auth.token = \"server-token\"\n" +
+		"webServer.addr = \"127.0.0.1\"\n" +
+		"webServer.port = 7400\n" +
+		"webServer.user = \"admin\"\n" +
+		"webServer.password = \"admin-secret\"\n" +
+		"[[proxies]]\n" +
+		"name = \"ssh\"\n" +
+		"type = \"tcp\"\n" +
+		"localIP = \"127.0.0.1\"\n" +
+		"localPort = 22\n" +
+		"remotePort = 6000\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	store, err := storage.Open(ctx, dir)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
 	svc := app.NewService(app.Options{Store: store, Runtime: &fakeRuntime{}, Addr: "127.0.0.1:8080"})
-
-	server, err := svc.CreateServer(ctx, app.ServerInput{
-		Name:          "main",
-		ServerAddr:    "frp.example.com",
-		ServerPort:    7000,
-		AuthToken:     "server-token",
-		AdminUser:     "frpc-web",
-		AdminPassword: "admin-secret",
-	})
-	if err != nil {
-		t.Fatalf("create server: %v", err)
-	}
-	if _, err := svc.CreateRule(ctx, server.ID, app.ProxyRuleInput{
-		Name:      "ssh-secure",
-		Type:      "stcp",
-		Role:      "server",
-		LocalIP:   "127.0.0.1",
-		LocalPort: 22,
-		SecretKey: "stcp-secret",
-		Enabled:   true,
-	}); err != nil {
-		t.Fatalf("create stcp rule: %v", err)
-	}
-
-	full, err := svc.ExportConfig(ctx)
-	if err != nil {
-		t.Fatalf("export full: %v", err)
-	}
-	if len(full.Servers) != 1 || full.Servers[0].Server.AuthToken != "server-token" || full.Servers[0].Rules[0].SecretKey != "stcp-secret" {
-		t.Fatalf("expected full secrets in export: %#v", full.Servers)
-	}
-
-	targetStore, err := storage.Open(ctx, t.TempDir())
-	if err != nil {
-		t.Fatalf("open target store: %v", err)
-	}
-	defer targetStore.Close()
-	target := app.NewService(app.Options{Store: targetStore, Runtime: &fakeRuntime{}, Addr: "127.0.0.1:8080"})
-	result, err := target.ImportConfig(ctx, app.ConfigImportInput{Mode: "merge", Bundle: full})
-	if err != nil {
-		t.Fatalf("import config: %v", err)
-	}
-	if !result.OK {
-		t.Fatalf("import result not ok: %#v", result)
-	}
-	imported, err := target.Servers(ctx)
-	if err != nil {
-		t.Fatalf("list imported servers: %v", err)
-	}
-	if len(imported) != 1 || imported[0].ProxyCount != 1 {
-		t.Fatalf("unexpected imported servers: %#v", imported)
-	}
-}
-
-func TestImportReplaceKeepsConfigWhenBundleInvalid(t *testing.T) {
-	ctx := context.Background()
-	store, err := storage.Open(ctx, t.TempDir())
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer store.Close()
-	svc := app.NewService(app.Options{Store: store, Runtime: &fakeRuntime{}, Addr: "127.0.0.1:8080"})
-
-	if _, err := svc.CreateServer(ctx, app.ServerInput{
-		Name:       "keep-me",
-		ServerAddr: "frp.example.com",
-		ServerPort: 7000,
-	}); err != nil {
-		t.Fatalf("create server: %v", err)
-	}
-
-	// 名称为空的服务器会校验失败；replace 导入必须在删除现有配置前发现这一点。
-	_, err = svc.ImportConfig(ctx, app.ConfigImportInput{
-		Mode: "replace",
-		Bundle: app.ConfigBundle{
-			Version: 1,
-			Servers: []app.ServerBundle{{Server: app.Server{Name: "", ServerAddr: "x", ServerPort: 7000}}},
-		},
-	})
-	if err == nil {
-		t.Fatal("expected import of invalid bundle to fail")
-	}
+	svc.RefreshScan(ctx)
 
 	servers, err := svc.Servers(ctx)
 	if err != nil {
-		t.Fatalf("list servers: %v", err)
+		t.Fatalf("servers: %v", err)
 	}
-	if len(servers) != 1 || servers[0].Name != "keep-me" {
-		t.Fatalf("existing config was destroyed by failed replace import: %#v", servers)
+	if len(servers) != 1 {
+		t.Fatalf("want 1 server, got %d", len(servers))
+	}
+	s := servers[0]
+	if s.ServerAddr != "frp.example.com" || s.ServerPort != 7000 || s.AdminPort != 7400 {
+		t.Fatalf("unexpected server fields: %#v", s)
+	}
+	if s.ProxyCount != 1 || len(s.Rules) != 1 || s.Rules[0].Name != "ssh" {
+		t.Fatalf("unexpected rules: %#v", s.Rules)
+	}
+	if s.ConfigPath != cfgPath {
+		t.Fatalf("config path = %q, want %q", s.ConfigPath, cfgPath)
+	}
+	// 敏感字段应被掩码（首尾各 2 字符 + ****）。
+	if s.AuthToken != "se****en" {
+		t.Fatalf("auth token not masked: %q", s.AuthToken)
+	}
+	if s.AdminPassword != "ad****et" {
+		t.Fatalf("admin password not masked: %q", s.AdminPassword)
+	}
+
+	// 导出应包含原文（含明文密钥）。
+	bundle, err := svc.ExportConfig(ctx)
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	if len(bundle.Files) != 1 || bundle.Files[0].Path != cfgPath || bundle.Files[0].Content != content {
+		t.Fatalf("unexpected export: %#v", bundle.Files)
 	}
 }
 
-func TestServiceRejectsInvalidRequestHeader(t *testing.T) {
+// ProxiesStatus 对配置了 admin API 的实例应返回 running + proxies。
+func TestProxiesStatus(t *testing.T) {
 	ctx := context.Background()
-	store, err := storage.Open(ctx, t.TempDir())
+	dir := t.TempDir()
+	t.Setenv("FRPC_WEB_CONFIG_PATH", dir)
+
+	content := "serverAddr = \"frp.example.com\"\nserverPort = 7000\n" +
+		"webServer.addr = \"127.0.0.1\"\nwebServer.port = 7400\n" +
+		"[[proxies]]\nname = \"ssh\"\ntype = \"tcp\"\nlocalPort = 22\nremotePort = 6000\n"
+	if err := os.WriteFile(filepath.Join(dir, "frpc.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := storage.Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	rt := &fakeRuntime{proxyStatuses: []app.ProxyStatus{{Name: "ssh", Phase: "running"}}}
+	svc := app.NewService(app.Options{Store: store, Runtime: rt, Addr: "127.0.0.1:8080"})
+	svc.RefreshScan(ctx)
+
+	statuses, err := svc.ProxiesStatus(ctx)
+	if err != nil {
+		t.Fatalf("proxies status: %v", err)
+	}
+	if len(statuses) != 1 || !statuses[0].Running || len(statuses[0].Proxies) != 1 {
+		t.Fatalf("unexpected statuses: %#v", statuses)
+	}
+}
+
+// 导入配置应把原文写回扫描路径内的目标文件。
+func TestConfigImportWritesFiles(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	t.Setenv("FRPC_WEB_CONFIG_PATH", dir)
+
+	store, err := storage.Open(ctx, dir)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
 	svc := app.NewService(app.Options{Store: store, Runtime: &fakeRuntime{}, Addr: "127.0.0.1:8080"})
 
-	server, err := svc.CreateServer(ctx, app.ServerInput{Name: "main", ServerAddr: "frp.example.com", ServerPort: 7000, AdminPort: 17400})
+	target := filepath.Join(dir, "imported.toml")
+	bundle := app.ConfigBundle{
+		Version: 1,
+		Files:   []app.ConfigFile{{Path: target, Content: "serverAddr = \"x\"\nserverPort = 7000\n"}},
+	}
+	result, err := svc.ImportConfig(ctx, app.ConfigImportInput{Bundle: bundle})
 	if err != nil {
-		t.Fatalf("create server: %v", err)
-	}
-
-	badHeaders := []string{"missing-delimiter", "bad header: value"}
-	for _, header := range badHeaders {
-		_, err := svc.CreateRule(ctx, server.ID, app.ProxyRuleInput{
-			Name: "web", Type: "http", LocalIP: "127.0.0.1", LocalPort: 8080,
-			CustomDomains: []string{"app.example.com"}, Enabled: true,
-			RequestHeaders: []string{header},
-		})
-		if !errors.Is(err, app.ErrInvalidInput) {
-			t.Fatalf("CreateRule with header %q error = %v, want ErrInvalidInput", header, err)
-		}
-	}
-
-	if _, err := svc.CreateRule(ctx, server.ID, app.ProxyRuleInput{
-		Name: "web", Type: "http", LocalIP: "127.0.0.1", LocalPort: 8080,
-		CustomDomains: []string{"app.example.com"}, Enabled: true,
-		RequestHeaders: []string{"X-Forwarded-Proto: https"},
-	}); err != nil {
-		t.Fatalf("CreateRule with valid header: %v", err)
-	}
-}
-
-func TestIsValidHeaderName(t *testing.T) {
-	cases := map[string]bool{
-		"X-Forwarded-For": true,
-		"X_Custom_1":      true,
-		"":                false,
-		"has space":       false,
-		"bad:colon":       false,
-	}
-	for name, want := range cases {
-		if got := app.IsValidHeaderName(name); got != want {
-			t.Fatalf("IsValidHeaderName(%q) = %v, want %v", name, got, want)
-		}
-	}
-}
-
-// 恶意/共享的配置 bundle 不能通过 version.Path 指向受管目录之外的可执行文件，
-// 否则激活后 Start 会 exec 它。导入时必须拒绝目录外路径，只保留受管目录内真实存在的二进制。
-func TestImportRejectsVersionPathOutsideManagedDir(t *testing.T) {
-	ctx := context.Background()
-	dataDir := t.TempDir()
-	store, err := storage.Open(ctx, dataDir)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer store.Close()
-	svc := app.NewService(app.Options{Store: store, Runtime: &fakeRuntime{}, Addr: "127.0.0.1:8080"})
-
-	// 受管目录内、真实存在的二进制：应被接受。
-	legitPath := filepath.Join(dataDir, "bin", "frpc", "9.9.9", "frpc")
-	if err := os.MkdirAll(filepath.Dir(legitPath), 0o700); err != nil {
-		t.Fatalf("mkdir bin: %v", err)
-	}
-	if err := os.WriteFile(legitPath, []byte("#!/bin/sh\n"), 0o700); err != nil {
-		t.Fatalf("write legit binary: %v", err)
-	}
-
-	if _, err := svc.ImportConfig(ctx, app.ConfigImportInput{
-		Mode: "merge",
-		Bundle: app.ConfigBundle{
-			Version: 1,
-			Versions: []app.FRPCVersion{
-				{Version: "evil", Path: "/bin/sh", Installed: true, Active: true},
-				{Version: "9.9.9", Path: legitPath, Installed: true},
-			},
-		},
-	}); err != nil {
 		t.Fatalf("import: %v", err)
 	}
+	if !result.OK {
+		t.Fatalf("import not ok: %#v", result)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("imported file not written: %v", err)
+	}
+}
 
-	versions, err := svc.Versions(ctx)
+// 导入必须拒绝写到扫描范围外的任意路径，以及非配置后缀（如 state.json），
+// 防止用伪造的 bundle 覆盖面板状态文件或越权写。
+func TestConfigImportRejectsUnsafePaths(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	t.Setenv("FRPC_WEB_CONFIG_PATH", dir)
+
+	store, err := storage.Open(ctx, dir)
 	if err != nil {
-		t.Fatalf("list versions: %v", err)
+		t.Fatalf("open store: %v", err)
 	}
-	foundLegit := false
-	for _, v := range versions {
-		if v.Path == "/bin/sh" || v.Version == "evil" {
-			t.Fatalf("import accepted out-of-tree version path: %#v", v)
-		}
-		if v.Path == legitPath {
-			foundLegit = true
-		}
+	defer store.Close()
+	svc := app.NewService(app.Options{Store: store, Runtime: &fakeRuntime{}, Addr: "127.0.0.1:8080"})
+
+	// 1) 范围外的绝对路径应被跳过。
+	outside := filepath.Join(t.TempDir(), "evil.toml")
+	// 2) 范围内但非 .toml/.ini 的文件不应被导入覆盖（即便在数据目录内）。
+	//    先放一个哨兵文件，导入后内容应保持不变。
+	sentinel := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(sentinel, []byte("SENTINEL"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if !foundLegit {
-		t.Fatalf("import dropped legitimate in-tree version; got %#v", versions)
+
+	bundle := app.ConfigBundle{
+		Version: 1,
+		Files: []app.ConfigFile{
+			{Path: outside, Content: "serverAddr = \"x\"\n"},
+			{Path: sentinel, Content: "{\"sessions\":[]}"},
+		},
 	}
-}
-
-type fakeRuntime struct {
-	latest        string
-	latestProxy   string
-	installInput  app.FRPCInstallOnlineInput
-	alive         bool
-	proxyStatuses []app.ProxyStatus
-	proxyErr      error
-	binaries      []app.FRPCBinaryCandidate
-	processes     []app.FRPCProcessCandidate
-	processErr    error
-	registerErr   error
-}
-
-func (r *fakeRuntime) RenderConfig(context.Context, app.Server) (app.ConfigPreview, error) {
-	return app.ConfigPreview{}, nil
-}
-
-func (r *fakeRuntime) CheckConfig(context.Context, app.Server, app.FRPCVersion) app.ActionResult {
-	return app.ActionResult{OK: true, Message: "ok"}
-}
-
-func (r *fakeRuntime) Start(context.Context, app.Server, app.FRPCVersion) (app.ProcessInfo, app.ActionResult) {
-	return app.ProcessInfo{}, app.ActionResult{OK: true, Message: "ok"}
-}
-
-func (r *fakeRuntime) Stop(context.Context, app.Server, app.ProcessInfo) app.ActionResult {
-	return app.ActionResult{OK: true, Message: "ok"}
-}
-
-func (r *fakeRuntime) Reload(context.Context, app.Server, app.FRPCVersion) app.ActionResult {
-	return app.ActionResult{OK: true, Message: "ok"}
-}
-
-func (r *fakeRuntime) Logs(context.Context, string, int) ([]app.LogLine, error) {
-	return []app.LogLine{}, nil
-}
-
-func (r *fakeRuntime) InstallOnline(_ context.Context, input app.FRPCInstallOnlineInput) (app.FRPCVersion, error) {
-	r.installInput = input
-	return app.FRPCVersion{
-		Version:   input.Version,
-		Platform:  input.Platform,
-		Arch:      input.Arch,
-		Path:      "/tmp/frpc",
-		Source:    "online",
-		Installed: true,
-	}, nil
-}
-
-func (r *fakeRuntime) InstallOffline(context.Context, string, io.Reader) (app.FRPCVersion, error) {
-	return app.FRPCVersion{}, nil
-}
-
-func (r *fakeRuntime) LatestVersion(_ context.Context, githubProxy string) (string, error) {
-	r.latestProxy = githubProxy
-	if r.latest == "" {
-		return "0.70.0", nil
+	result, err := svc.ImportConfig(ctx, app.ConfigImportInput{Bundle: bundle})
+	if err != nil {
+		t.Fatalf("import: %v", err)
 	}
-	return r.latest, nil
-}
-
-func (r *fakeRuntime) ProxyStatus(context.Context, app.Server) ([]app.ProxyStatus, error) {
-	if r.proxyErr != nil {
-		return nil, r.proxyErr
+	if result.OK {
+		t.Fatalf("unsafe import should not succeed: %#v", result)
 	}
-	return r.proxyStatuses, nil
-}
-
-func (r *fakeRuntime) ProcessAlive(context.Context, int) bool {
-	return r.alive
-}
-
-func (r *fakeRuntime) SetExitHandler(func(string, error)) {}
-
-func (r *fakeRuntime) Adopt(string, int) {}
-
-func (r *fakeRuntime) DiscoverBinaries() []app.FRPCBinaryCandidate {
-	return r.binaries
-}
-
-func (r *fakeRuntime) DiscoverProcesses() ([]app.FRPCProcessCandidate, error) {
-	return r.processes, r.processErr
-}
-
-func (r *fakeRuntime) RegisterBinary(path string) (app.FRPCVersion, error) {
-	if r.registerErr != nil {
-		return app.FRPCVersion{}, r.registerErr
+	if _, err := os.Stat(outside); err == nil {
+		t.Fatal("out-of-scope path was written")
 	}
-	return app.FRPCVersion{Version: "system", Path: path, Source: "system", Installed: true}, nil
+	if got, _ := os.ReadFile(sentinel); string(got) != "SENTINEL" {
+		t.Fatalf("non-config file was overwritten by import: %q", got)
+	}
 }

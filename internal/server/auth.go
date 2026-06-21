@@ -155,46 +155,16 @@ func auditMetaFor(r *http.Request) (auditMeta, bool) {
 		return auditMeta{"config.export", "config", ""}, true
 	case path == "/api/config/import" && method == http.MethodPost:
 		return auditMeta{"config.import", "config", ""}, true
-	case path == "/api/backups" && method == http.MethodPost:
-		return auditMeta{"backup.create", "backup", ""}, true
-	case len(parts) == 3 && parts[1] == "backups" && method == http.MethodGet:
-		return auditMeta{"backup.download", "backup", part(parts, 2)}, true
-	case len(parts) == 4 && parts[1] == "backups" && parts[3] == "restore" && method == http.MethodPost:
-		return auditMeta{"backup.restore", "backup", part(parts, 2)}, true
+	case len(parts) == 3 && parts[1] == "config-files" && method == http.MethodPut:
+		return auditMeta{"config.edit", "config", part(parts, 2)}, true
 	case path == "/api/auth/access-key" && method == http.MethodPost:
 		return auditMeta{"auth.access_key", "settings", "access_key"}, true
 	case path == "/api/audit-logs" && method == http.MethodDelete:
 		return auditMeta{"audit.clear", "audit", ""}, true
-	case path == "/api/servers" && method == http.MethodPost:
-		return auditMeta{"servers.create", "server", ""}, true
-	case len(parts) == 3 && parts[1] == "servers" && method == http.MethodPut:
-		return auditMeta{"servers.update", "server", part(parts, 2)}, true
-	case len(parts) == 3 && parts[1] == "servers" && method == http.MethodDelete:
-		return auditMeta{"servers.delete", "server", part(parts, 2)}, true
-	case strings.HasSuffix(path, "/start"):
-		return auditMeta{"servers.start", "server", part(parts, 2)}, true
-	case strings.HasSuffix(path, "/stop"):
-		return auditMeta{"servers.stop", "server", part(parts, 2)}, true
-	case strings.HasSuffix(path, "/restart"):
-		return auditMeta{"servers.restart", "server", part(parts, 2)}, true
-	case strings.HasSuffix(path, "/reload"):
+	case strings.HasSuffix(path, "/reload") && method == http.MethodPost:
 		return auditMeta{"servers.reload", "server", part(parts, 2)}, true
-	case strings.HasSuffix(path, "/check"):
-		return auditMeta{"servers.check", "server", part(parts, 2)}, true
-	case strings.HasSuffix(path, "/rules") && method == http.MethodPost:
-		return auditMeta{"rules.create", "server", part(parts, 2)}, true
-	case len(parts) == 5 && parts[1] == "servers" && parts[3] == "rules" && method == http.MethodPut:
-		return auditMeta{"rules.update", "rule", part(parts, 4)}, true
-	case len(parts) == 5 && parts[1] == "servers" && parts[3] == "rules" && method == http.MethodDelete:
-		return auditMeta{"rules.delete", "rule", part(parts, 4)}, true
-	case strings.HasPrefix(path, "/api/frpc/versions/") && strings.HasSuffix(path, "/activate"):
-		return auditMeta{"frpc.activate", "frpc_version", part(parts, 3)}, true
-	case path == "/api/frpc/check-latest":
-		return auditMeta{"frpc.check_latest", "frpc", ""}, true
-	case path == "/api/frpc/install/online":
-		return auditMeta{"frpc.install_online", "frpc", ""}, true
-	case path == "/api/frpc/install/offline":
-		return auditMeta{"frpc.install_offline", "frpc", ""}, true
+	case path == "/api/app/update/apply" && method == http.MethodPost:
+		return auditMeta{"app.update", "app", ""}, true
 	default:
 		return auditMeta{}, false
 	}
